@@ -134,7 +134,8 @@ async function flushNotifications() {
 function queueNotification(message: string) {
     pendingNotifications.push(message);
     if (notificationTimeout === null) {
-        notificationTimeout = window.setTimeout(flushNotifications, 3000);
+        const delay = Settings.plugins[PLUGIN_NAME].notificationDelay ?? 3000;
+        notificationTimeout = window.setTimeout(flushNotifications, delay);
     }
 }
 
@@ -215,6 +216,11 @@ export default definePlugin({
             type: OptionType.BOOLEAN,
             description: "0人になったら通知する",
             default: false
+        },
+        notificationDelay: {
+            type: OptionType.NUMBER,
+            description: "通知をまとめる待機時間 (ミリ秒)",
+            default: 3000
         }
     },
 
