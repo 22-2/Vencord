@@ -111,6 +111,11 @@ export default definePlugin({
             type: OptionType.STRING,
             description: "再生する音声ファイルのパス (C:\\path\\to\\file.mp3)",
             default: ""
+        },
+        ignoredUserIds: {
+            type: OptionType.STRING,
+            description: "除外するユーザーID (カンマ区切り)",
+            default: ""
         }
     },
 
@@ -131,6 +136,7 @@ export default definePlugin({
             }
 
             const myId = UserStore.getCurrentUser()?.id;
+            const ignoredIds = Settings.plugins.NotifyVoiceChannel.ignoredUserIds.split(",").map(id => id.trim()).filter(id => id);
 
             for (const state of voiceStates) {
                 const { guildId, channelId, userId, oldChannelId } = state;
@@ -144,6 +150,9 @@ export default definePlugin({
 
                 // 自分の場合は設定を確認
                 if (userId === myId && !Settings.plugins.NotifyVoiceChannel.notifySelf) continue;
+
+                // 除外ユーザーかチェック
+                if (ignoredIds.includes(userId)) continue;
 
                 const user = UserStore.getUser(userId);
                 const userName = user?.globalName || user?.username || "Unknown User";
