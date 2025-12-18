@@ -20,7 +20,8 @@ import { showNotification } from "@api/Notifications";
 import { Settings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { ChannelStore, GuildStore, UserStore, VoiceStateStore } from "@webpack/common";
+import { ChannelStore, GuildStore, Menu, React, UserStore, VoiceStateStore } from "@webpack/common";
+import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 
 interface TargetChannel {
     guildId: string;
@@ -48,6 +49,34 @@ async function sendPushoverNotification(title: string, message: string) {
     }
 }
 
+const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
+    if (!channel || channel.type !== 2) return; // 2 is GUILD_VOICE
+
+    const guildId = channel.guild_id;
+    const channelId = channel.id;
+    const channelName = channel.name;
+
+    let targets: TargetChannel[] = [];
+    try {
+        targets = JSON.parse(Settings.plugins.NotifyVoiceChannel.channels || "[]");
+    } catch (e) { }
+
+    const isTarget = targets.some(t => t.guildId === guildId && t.channelId === channelId);
+
+    children.push(React.createElement(Menu.MenuItem, {
+        id: "notify-voice-channel-toggle",
+        label: isTarget ? "ボイチャ通知を解除" : "ボイチャ通知を登録",
+        action: () => {
+            if (isTarget) {
+                targets = targets.filter(t => !(t.guildId === guildId && t.channelId === channelId));
+            } else {
+                targets.push({ guildId, channelId, name: channelName });
+            }
+            Settings.plugins.NotifyVoiceChannel.channels = JSON.stringify(targets);
+        }
+    }));
+};
+
 export default definePlugin({
     name: "NotifyVoiceChannel",
     description: "通話開始時に通知を送信します。",
@@ -68,7 +97,16 @@ export default definePlugin({
             type: OptionType.STRING,
             description: "監視対象チャンネル (JSON: [{\"guildId\":\"...\",\"channelId\":\"...\",\"name\":\"...\"}])",
             default: "[]"
+        },
+        notifySelf: {
+            type: OptionType.BOOLEAN,
+            description: "自分自身の入室も通知する",
+            default: false
         }
+    },
+
+    contextMenus: {
+        "channel-context": patchChannelContextMenu
     },
 
     flux: {
@@ -95,8 +133,8 @@ export default definePlugin({
                 const target = targets.find(t => t.guildId === guildId && t.channelId === channelId);
                 if (!target) continue;
 
-                // 自分の場合はスキップ
-                if (userId === myId) continue;
+                // 自分の場合は設定を確認
+                if (userId === myId && !Settings.plugins.NotifyVoiceChannel.notifySelf) continue;
 
                 const user = UserStore.getUser(userId);
                 const userName = user?.globalName || user?.username || "Unknown User";
