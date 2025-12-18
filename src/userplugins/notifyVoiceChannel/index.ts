@@ -80,11 +80,15 @@ async function sendPushoverNotification(title: string, message: string) {
 let pendingNotifications: string[] = [];
 let notificationTimeout: number | null = null;
 
-function flushNotifications() {
+async function flushNotifications() {
     if (pendingNotifications.length === 0) return;
 
-    const message = pendingNotifications.length > 1
-        ? "複数の入室を確認しました:\n" + pendingNotifications.join("\n")
+    const notifications = [...pendingNotifications];
+    pendingNotifications = [];
+    notificationTimeout = null;
+
+    const message = notifications.length > 1
+        ? "複数の入室を確認しました:\n" + notifications.join("\n")
         : pendingNotifications[0];
 
     // Native Notification
@@ -107,14 +111,24 @@ function flushNotifications() {
         if (!path.startsWith("http") && !path.startsWith("file://")) {
             path = "file:///" + path.replace(/\\/g, "/");
         }
+
+        // Request CSP override for media-src
+        if (typeof VencordNative !== "undefined" && VencordNative.csp?.requestAddOverride) {
+            try {
+                const isAllowed = await VencordNative.csp.isDomainAllowed(path, ["media-src"]);
+                if (!isAllowed) {
+                    await VencordNative.csp.requestAddOverride(path, ["media-src"], PLUGIN_NAME);
+                }
+            } catch (error) {
+                console.error(`[${PLUGIN_NAME}] Failed to request CSP override:`, error);
+            }
+        }
+
         new Audio(path).play().catch(e => console.error(`[${PLUGIN_NAME}] Failed to play audio:`, e));
     }
 
     // Pushover
     sendPushoverNotification("Discordボイチャ通知", message);
-
-    pendingNotifications = [];
-    notificationTimeout = null;
 }
 
 function queueNotification(message: string) {
