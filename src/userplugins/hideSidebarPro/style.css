@@ -1,27 +1,44 @@
 /* HideSidebarPro Styles */
 
 /* Members List */
-body.vc-hds-hide-members [class*="membersWrap"] {
-    transition: width 0.25s ease, min-width 0.25s ease, flex-basis 0.25s ease !important;
-    width: 10px !important;
-    min-width: 10px !important;
-    flex-basis: 10px !important;
+body.vc-hds-hide-members aside[class*="membersWrap"] {
+    transition: width 0.25s ease, min-width 0.25s ease !important;
     overflow: hidden !important;
+    position: relative !important;
+    height: 100% !important;
+    /* Flexboxの子要素として潰されないようにする */
+    flex-grow: 0 !important;
+    flex-shrink: 0 !important;
+    flex-basis: auto !important;
 }
 
-body.vc-hds-hide-members [class*="membersWrap"]:hover {
+/* ホバーしていない状態 */
+body.vc-hds-hide-members aside[class*="membersWrap"]:not(:hover) {
+    width: 0 !important;
+    min-width: 15px !important;
+    background: var(--background-secondary);
+}
+
+/* ホバーした状態 */
+body.vc-hds-hide-members aside[class*="membersWrap"]:hover {
     width: 240px !important;
     min-width: 240px !important;
-    flex-basis: 240px !important;
 }
 
-body.vc-hds-hide-members [class*="membersWrap"] > * {
+/* 内部コンテンツの幅固定 */
+body.vc-hds-hide-members aside[class*="membersWrap"] > div {
+    width: 240px !important;
+    min-width: 240px !important;
+}
+
+/* コンテンツの表示制御 */
+body.vc-hds-hide-members aside[class*="membersWrap"] > * {
     visibility: hidden;
     opacity: 0;
     transition: visibility 0s 0.25s, opacity 0.25s linear;
 }
 
-body.vc-hds-hide-members [class*="membersWrap"]:hover > * {
+body.vc-hds-hide-members aside[class*="membersWrap"]:hover > * {
     visibility: visible;
     opacity: 1;
     transition: opacity 0.25s linear;
