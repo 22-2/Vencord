@@ -1,0 +1,72 @@
+/* HideSidebarPro Styles */
+
+body.vc-hds-hide-servers [class*="sidebar_"] {
+  transition: all 0.25s ease;
+  width: 0 !important;
+  padding-left: 5vmin !important;
+}
+
+body.vc-hds-hide-servers [class*="sidebar_"]:hover {
+  width: 240px !important;
+  padding-left: 0 !important;
+}
+
+body.vc-hds-hide-servers [class*="sidebar_"] > * {
+  visibility: hidden;
+  opacity: 0;
+  transition: visibility 0s 0.25s, opacity 0.25s linear;
+}
+
+body.vc-hds-hide-servers [class*="sidebar_"]:hover > * {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.25s linear;
+}
+
+/* Members List */
+body.vc-hds-hide-members [class^="container_"] > aside[class*="membersWrap_"] {
+  transition: all 0.25s ease;
+}
+
+body.vc-hds-hide-members [class^="container_"] > aside[class*="membersWrap_"]:hover {
+  width: 240px !important;
+  padding-left: 0 !important;
+}
+
+body.vc-hds-hide-members [class^="container_"] > aside[class*="membersWrap_"]:not(:hover) {
+  padding-left: 0;
+  min-width: 5vmin;
+  width: 0;
+}
+
+body.vc-hds-hide-members [class^="container_"] > aside[class*="membersWrap_"] > * {
+  visibility: hidden;
+  opacity: 0;
+  transition: visibility 0s 0.25s, opacity 0.25s linear;
+}
+
+body.vc-hds-hide-members [class^="container_"] > aside[class*="membersWrap_"]:hover > * {
+  visibility: visible;
+  opacity: 1;
+  transition: opacity 0.25s linear;
+}
+
+/* Small Server List */
+body.vc-hds-small-server-list nav[aria-label="Servers sidebar"] {
+  width: 55px;
+}
+
+body.vc-hds-small-server-list nav[aria-label="Servers sidebar"] ul[class^="tree_"] div {
+  align-self: center;
+  justify-self: center;
+}
+
+body.vc-hds-small-server-list nav[aria-label="Servers sidebar"] div[class^="listItem_"] {
+  align-self: center;
+  justify-self: center;
+}
+
+body.vc-hds-small-server-list [class^="wrapper_c5f96a"] {
+  height: 35px !important;
+  width: 35px !important;
+}
