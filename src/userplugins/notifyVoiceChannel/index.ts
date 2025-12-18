@@ -22,14 +22,29 @@ import definePlugin, { OptionType } from "@utils/types";
 import { ChannelStore, GuildStore, Menu, React, UserStore, VoiceStateStore } from "@webpack/common";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 
+const PLUGIN_NAME = "NotifyVoiceChannel";
+
 interface TargetChannel {
     guildId: string;
     channelId: string;
     name: string;
 }
 
+function getTargets(): TargetChannel[] {
+    try {
+        return JSON.parse(Settings.plugins[PLUGIN_NAME].channels || "[]");
+    } catch (e) {
+        console.error(`[${PLUGIN_NAME}] Failed to parse channels:`, e);
+        return [];
+    }
+}
+
+function setTargets(targets: TargetChannel[]) {
+    Settings.plugins[PLUGIN_NAME].channels = JSON.stringify(targets);
+}
+
 async function sendPushoverNotification(title: string, message: string) {
-    const { userKey, apiToken } = Settings.plugins.NotifyVoiceChannel;
+    const { userKey, apiToken } = Settings.plugins[PLUGIN_NAME];
     if (!userKey || !apiToken) return;
 
     try {
@@ -44,7 +59,7 @@ async function sendPushoverNotification(title: string, message: string) {
             }),
         });
     } catch (error) {
-        console.error("Error sending Pushover notification:", error);
+        console.error(`[${PLUGIN_NAME}] Error sending Pushover notification:`, error);
     }
 }
 
@@ -58,7 +73,7 @@ function flushNotifications() {
         ? "複数の入室を確認しました:\n" + pendingNotifications.join("\n")
         : pendingNotifications[0];
 
-    // ネイティブ通知
+    // Native Notification
     if ("Notification" in window) {
         if (Notification.permission === "granted") {
             new Notification("ボイチャ通知", { body: message });
@@ -71,13 +86,14 @@ function flushNotifications() {
         }
     }
 
-    // 音声再生
-    if (Settings.plugins.NotifyVoiceChannel.playAudio && Settings.plugins.NotifyVoiceChannel.audioPath) {
-        let path = Settings.plugins.NotifyVoiceChannel.audioPath;
+    // Audio Playback
+    const { playAudio, audioPath } = Settings.plugins[PLUGIN_NAME];
+    if (playAudio && audioPath) {
+        let path = audioPath;
         if (!path.startsWith("http") && !path.startsWith("file://")) {
             path = "file:///" + path.replace(/\\/g, "/");
         }
-        new Audio(path).play().catch(e => console.error("Failed to play audio:", e));
+        new Audio(path).play().catch(e => console.error(`[${PLUGIN_NAME}] Failed to play audio:`, e));
     }
 
     // Pushover
@@ -87,6 +103,21 @@ function flushNotifications() {
     notificationTimeout = null;
 }
 
+function queueNotification(message: string) {
+    pendingNotifications.push(message);
+    if (notificationTimeout === null) {
+        notificationTimeout = window.setTimeout(flushNotifications, 3000);
+    }
+}
+
+function getChannelInfo(guildId: string, channelId: string, targetName?: string) {
+    const guild = GuildStore.getGuild(guildId);
+    const guildName = guild?.name || "Unknown Server";
+    const channel = ChannelStore.getChannel(channelId);
+    const channelName = targetName || channel?.name || "Unknown Channel";
+    return { guildName, channelName };
+}
+
 const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
     if (!channel || channel.type !== 2) return; // 2 is GUILD_VOICE
 
@@ -94,11 +125,7 @@ const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channe
     const channelId = channel.id;
     const channelName = channel.name;
 
-    let targets: TargetChannel[] = [];
-    try {
-        targets = JSON.parse(Settings.plugins.NotifyVoiceChannel.channels || "[]");
-    } catch (e) { }
-
+    const targets = getTargets();
     const isTarget = targets.some(t => t.guildId === guildId && t.channelId === channelId);
 
     children.push(React.createElement(Menu.MenuItem, {
@@ -106,17 +133,17 @@ const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channe
         label: isTarget ? "ボイチャ通知を解除" : "ボイチャ通知を登録",
         action: () => {
             if (isTarget) {
-                targets = targets.filter(t => !(t.guildId === guildId && t.channelId === channelId));
+                setTargets(targets.filter(t => !(t.guildId === guildId && t.channelId === channelId)));
             } else {
                 targets.push({ guildId, channelId, name: channelName });
+                setTargets(targets);
             }
-            Settings.plugins.NotifyVoiceChannel.channels = JSON.stringify(targets);
         }
     }));
 };
 
 export default definePlugin({
-    name: "NotifyVoiceChannel",
+    name: PLUGIN_NAME,
     description: "通話開始時に通知を送信します。",
     authors: [{ name: "Mondego", id: 0n }],
 
@@ -171,66 +198,40 @@ export default definePlugin({
         VOICE_STATE_UPDATES({ voiceStates }) {
             if (!voiceStates) return;
 
-            let targets: TargetChannel[] = [];
-            try {
-                targets = JSON.parse(Settings.plugins.NotifyVoiceChannel.channels || "[]");
-            } catch (e) {
-                console.error("Failed to parse NotifyVoiceChannel channels:", e);
-                return;
-            }
-
+            const targets = getTargets();
+            const settings = Settings.plugins[PLUGIN_NAME];
             const myId = UserStore.getCurrentUser()?.id;
-            const ignoredIds = Settings.plugins.NotifyVoiceChannel.ignoredUserIds.split(",").map(id => id.trim()).filter(id => id);
+            const ignoredIds = settings.ignoredUserIds.split(",").map(id => id.trim()).filter(id => id);
 
             for (const state of voiceStates) {
                 const { guildId, channelId, userId, oldChannelId } = state;
 
-                // 0人通知
-                if (oldChannelId && Settings.plugins.NotifyVoiceChannel.notifyOnEmpty) {
+                // Handle Channel Empty
+                if (oldChannelId && settings.notifyOnEmpty) {
                     const target = targets.find(t => t.guildId === guildId && t.channelId === oldChannelId);
                     if (target) {
-                        const voiceStates = VoiceStateStore.getVoiceStatesForChannel(oldChannelId);
-                        if (!voiceStates || Object.keys(voiceStates).length === 0) {
-                            const guild = GuildStore.getGuild(guildId!);
-                            const guildName = guild?.name || "Unknown Server";
-                            const channel = ChannelStore.getChannel(oldChannelId);
-                            const channelName = target.name || channel?.name || "Unknown Channel";
-
-                            pendingNotifications.push(`${guildName} の「${channelName}」が0人になりました`);
-                            if (notificationTimeout === null) {
-                                notificationTimeout = window.setTimeout(flushNotifications, 3000);
-                            }
+                        const currentVoiceStates = VoiceStateStore.getVoiceStatesForChannel(oldChannelId);
+                        if (!currentVoiceStates || Object.keys(currentVoiceStates).length === 0) {
+                            const { guildName, channelName } = getChannelInfo(guildId!, oldChannelId, target.name);
+                            queueNotification(`${guildName} の「${channelName}」が0人になりました`);
                         }
                     }
                 }
 
-                // チャンネルに入った（または移動した）場合のみ処理
+                // Handle User Join/Move
                 if (!channelId || channelId === oldChannelId) continue;
 
-                // ターゲットチャンネルかチェック
                 const target = targets.find(t => t.guildId === guildId && t.channelId === channelId);
                 if (!target) continue;
 
-                // 自分の場合は設定を確認
-                if (userId === myId && !Settings.plugins.NotifyVoiceChannel.notifySelf) continue;
-
-                // 除外ユーザーかチェック
+                if (userId === myId && !settings.notifySelf) continue;
                 if (ignoredIds.includes(userId)) continue;
 
                 const user = UserStore.getUser(userId);
                 const userName = user?.globalName || user?.username || "Unknown User";
-                const guild = GuildStore.getGuild(guildId!);
-                const guildName = guild?.name || "Unknown Server";
+                const { guildName, channelName } = getChannelInfo(guildId!, channelId, target.name);
 
-                const channel = ChannelStore.getChannel(channelId);
-                const channelName = target.name || channel?.name || "Unknown Channel";
-
-                const message = `${userName} が ${guildName} の「${channelName}」で通話を開始しました！`;
-                pendingNotifications.push(message);
-
-                if (notificationTimeout === null) {
-                    notificationTimeout = window.setTimeout(flushNotifications, 3000);
-                }
+                queueNotification(`${userName} が ${guildName} の「${channelName}」で通話を開始しました！`);
             }
         }
     }
