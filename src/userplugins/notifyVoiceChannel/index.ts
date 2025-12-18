@@ -102,6 +102,21 @@ export default definePlugin({
             type: OptionType.BOOLEAN,
             description: "自分自身の入室も通知する",
             default: false
+        },
+        playAudio: {
+            type: OptionType.BOOLEAN,
+            description: "通知時に音声を再生する",
+            default: false
+        },
+        audioUrl: {
+            type: OptionType.STRING,
+            description: "再生する音声ファイルのURL (mp3等)",
+            default: ""
+        },
+        forceNative: {
+            type: OptionType.BOOLEAN,
+            description: "常にOSのネイティブ通知を使用する",
+            default: false
         }
     },
 
@@ -146,10 +161,18 @@ export default definePlugin({
 
                 const message = `${userName} が ${guildName} の「${channelName}」で通話を開始しました！`;
 
-                showNotification({
-                    title: "ボイチャ通知",
-                    body: message
-                });
+                if (Settings.plugins.NotifyVoiceChannel.forceNative && "Notification" in window && Notification.permission === "granted") {
+                    new Notification("ボイチャ通知", { body: message });
+                } else {
+                    showNotification({
+                        title: "ボイチャ通知",
+                        body: message
+                    });
+                }
+
+                if (Settings.plugins.NotifyVoiceChannel.playAudio && Settings.plugins.NotifyVoiceChannel.audioUrl) {
+                    new Audio(Settings.plugins.NotifyVoiceChannel.audioUrl).play().catch(e => console.error("Failed to play audio:", e));
+                }
 
                 sendPushoverNotification("Discordボイチャ通知", message);
             }
