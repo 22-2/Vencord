@@ -155,6 +155,11 @@ export default definePlugin({
             type: OptionType.STRING,
             description: "除外するユーザーID (カンマ区切り)",
             default: ""
+        },
+        notifyOnEmpty: {
+            type: OptionType.BOOLEAN,
+            description: "0人になったら通知する",
+            default: false
         }
     },
 
@@ -179,6 +184,25 @@ export default definePlugin({
 
             for (const state of voiceStates) {
                 const { guildId, channelId, userId, oldChannelId } = state;
+
+                // 0人通知
+                if (oldChannelId && Settings.plugins.NotifyVoiceChannel.notifyOnEmpty) {
+                    const target = targets.find(t => t.guildId === guildId && t.channelId === oldChannelId);
+                    if (target) {
+                        const voiceStates = VoiceStateStore.getVoiceStatesForChannel(oldChannelId);
+                        if (!voiceStates || Object.keys(voiceStates).length === 0) {
+                            const guild = GuildStore.getGuild(guildId!);
+                            const guildName = guild?.name || "Unknown Server";
+                            const channel = ChannelStore.getChannel(oldChannelId);
+                            const channelName = target.name || channel?.name || "Unknown Channel";
+
+                            pendingNotifications.push(`${guildName} の「${channelName}」が0人になりました`);
+                            if (notificationTimeout === null) {
+                                notificationTimeout = window.setTimeout(flushNotifications, 3000);
+                            }
+                        }
+                    }
+                }
 
                 // チャンネルに入った（または移動した）場合のみ処理
                 if (!channelId || channelId === oldChannelId) continue;
