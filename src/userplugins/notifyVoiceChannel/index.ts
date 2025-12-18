@@ -47,8 +47,22 @@ async function sendPushoverNotification(title: string, message: string) {
     const { userKey, apiToken } = Settings.plugins[PLUGIN_NAME];
     if (!userKey || !apiToken) return;
 
+    const url = "https://api.pushover.net/1/messages.json";
+
+    // Bypass CSP if possible
+    if (typeof VencordNative !== "undefined" && VencordNative.csp?.requestAddOverride) {
+        const isAllowed = await VencordNative.csp.isDomainAllowed(url, ["connect-src"]);
+        if (!isAllowed) {
+            const res = await VencordNative.csp.requestAddOverride(url, ["connect-src"], PLUGIN_NAME);
+            if (res !== "ok") {
+                console.error(`[${PLUGIN_NAME}] CSP permission denied for Pushover API`);
+                return;
+            }
+        }
+    }
+
     try {
-        await fetch("https://api.pushover.net/1/messages.json", {
+        await fetch(url, {
             method: "POST",
             headers: { "Content-Type": "application/x-www-form-urlencoded" },
             body: new URLSearchParams({
