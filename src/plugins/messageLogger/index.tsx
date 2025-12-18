@@ -31,10 +31,59 @@ import definePlugin, { OptionType } from "@utils/types";
 import { Message } from "@vencord/discord-types";
 import { findByPropsLazy } from "@webpack";
 import { ChannelStore, FluxDispatcher, Menu, MessageStore, Parser, SelectedChannelStore, Timestamp, UserStore, useStateFromStores } from "@webpack/common";
+import { DBSchema, openDB } from "idb";
 
 import overlayStyle from "./deleteStyleOverlay.css?managed";
 import textStyle from "./deleteStyleText.css?managed";
 import { openHistoryModal } from "./HistoryModal";
+
+interface MessageLoggerDB extends DBSchema {
+    settings: {
+        key: string;
+        value: boolean;
+    };
+}
+
+const dbPromise = openDB<MessageLoggerDB>("MessageLoggerDB", 1, {
+    upgrade(db) {
+        db.createObjectStore("settings");
+    },
+});
+
+const monitoringCache = new Map<string, boolean>();
+
+async function loadMonitoringSettings() {
+    const db = await dbPromise;
+    const keys = await db.getAllKeys("settings");
+    for (const key of keys) {
+        const val = await db.get("settings", key);
+        if (val !== undefined) monitoringCache.set(key, val);
+    }
+}
+
+async function setMonitoring(type: "guild" | "channel", id: string, enabled: boolean | null) {
+    const key = `${type}:${id}`;
+    const db = await dbPromise;
+    if (enabled === null) {
+        await db.delete("settings", key);
+        monitoringCache.delete(key);
+    } else {
+        await db.put("settings", enabled, key);
+        monitoringCache.set(key, enabled);
+    }
+}
+
+function isMonitored(guildId: string | undefined, channelId: string): boolean {
+    const channelKey = `channel:${channelId}`;
+    if (monitoringCache.has(channelKey)) return monitoringCache.get(channelKey)!;
+
+    if (guildId) {
+        const guildKey = `guild:${guildId}`;
+        if (monitoringCache.has(guildKey)) return monitoringCache.get(guildKey)!;
+    }
+
+    return false;
+}
 
 interface MLMessage extends Message {
     deleted?: boolean;
@@ -129,6 +178,51 @@ const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channe
     );
 };
 
+const patchGuildContextMenu: NavContextMenuPatchCallback = (children, { guild }) => {
+    if (!guild) return;
+    const monitored = monitoringCache.get(`guild:${guild.id}`);
+
+    children.push(
+        <Menu.MenuItem
+            id="ml-monitor-guild"
+            label={monitored ? "Stop Logging this Server" : "Log this Server"}
+            action={() => setMonitoring("guild", guild.id, !monitored)}
+        />
+    );
+};
+
+const patchChannelMonitoringContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
+    if (!channel) return;
+    const monitored = monitoringCache.get(`channel:${channel.id}`);
+    const inherited = monitoringCache.get(`guild:${channel.guild_id}`);
+
+    children.push(
+        <Menu.MenuItem
+            id="ml-monitor-channel"
+            label="Message Logger"
+        >
+            <Menu.MenuItem
+                id="ml-monitor-channel-enable"
+                label="Enable Logging"
+                disabled={monitored === true}
+                action={() => setMonitoring("channel", channel.id, true)}
+            />
+            <Menu.MenuItem
+                id="ml-monitor-channel-disable"
+                label="Disable Logging"
+                disabled={monitored === false}
+                action={() => setMonitoring("channel", channel.id, false)}
+            />
+            <Menu.MenuItem
+                id="ml-monitor-channel-reset"
+                label={`Reset to Server Default (${inherited ? "Logging" : "Not Logging"})`}
+                disabled={monitored === undefined}
+                action={() => setMonitoring("channel", channel.id, null)}
+            />
+        </Menu.MenuItem>
+    );
+};
+
 export function parseEditContent(content: string, message: Message) {
     return Parser.parse(content, true, {
         channelId: message.channel_id,
@@ -149,14 +243,22 @@ export default definePlugin({
 
     contextMenus: {
         "message": patchMessageContextMenu,
-        "channel-context": patchChannelContextMenu,
-        "thread-context": patchChannelContextMenu,
+        "channel-context": (children, props) => {
+            patchChannelContextMenu(children, props);
+            patchChannelMonitoringContextMenu(children, props);
+        },
+        "thread-context": (children, props) => {
+            patchChannelContextMenu(children, props);
+            patchChannelMonitoringContextMenu(children, props);
+        },
         "user-context": patchChannelContextMenu,
-        "gdm-context": patchChannelContextMenu
+        "gdm-context": patchChannelContextMenu,
+        "guild-context": patchGuildContextMenu
     },
 
     start() {
         addDeleteStyle();
+        loadMonitoringSettings();
     },
 
     renderEdits: ErrorBoundary.wrap(({ message: { id: messageId, channel_id: channelId } }: { message: Message; }) => {
@@ -196,7 +298,6 @@ export default definePlugin({
         deleteStyle: {
             type: OptionType.SELECT,
             description: "The style of deleted messages",
-            default: "text",
             options: [
                 { label: "Red text", value: "text", default: true },
                 { label: "Red overlay", value: "overlay" }
@@ -288,6 +389,10 @@ export default definePlugin({
         try {
             const { ignoreBots, ignoreSelf, ignoreUsers, ignoreChannels, ignoreGuilds, logEdits, logDeletes } = Settings.plugins.MessageLogger;
             const myId = UserStore.getCurrentUser().id;
+
+            if (!isMonitored(ChannelStore.getChannel(message.channel_id)?.guild_id, message.channel_id)) {
+                return true;
+            }
 
             return ignoreBots && message.author?.bot ||
                 ignoreSelf && message.author?.id === myId ||
