@@ -16,7 +16,6 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
 */
 
-import { showNotification } from "@api/Notifications";
 import { Settings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
@@ -108,15 +107,10 @@ export default definePlugin({
             description: "通知時に音声を再生する",
             default: false
         },
-        audioUrl: {
+        audioPath: {
             type: OptionType.STRING,
-            description: "再生する音声ファイルのURL (mp3等)",
+            description: "再生する音声ファイルのパス (C:\\path\\to\\file.mp3)",
             default: ""
-        },
-        forceNative: {
-            type: OptionType.BOOLEAN,
-            description: "常にOSのネイティブ通知を使用する",
-            default: false
         }
     },
 
@@ -161,17 +155,25 @@ export default definePlugin({
 
                 const message = `${userName} が ${guildName} の「${channelName}」で通話を開始しました！`;
 
-                if (Settings.plugins.NotifyVoiceChannel.forceNative && "Notification" in window && Notification.permission === "granted") {
-                    new Notification("ボイチャ通知", { body: message });
-                } else {
-                    showNotification({
-                        title: "ボイチャ通知",
-                        body: message
-                    });
+                // ネイティブ通知
+                if ("Notification" in window) {
+                    if (Notification.permission === "granted") {
+                        new Notification("ボイチャ通知", { body: message });
+                    } else if (Notification.permission !== "denied") {
+                        Notification.requestPermission().then(permission => {
+                            if (permission === "granted") {
+                                new Notification("ボイチャ通知", { body: message });
+                            }
+                        });
+                    }
                 }
 
-                if (Settings.plugins.NotifyVoiceChannel.playAudio && Settings.plugins.NotifyVoiceChannel.audioUrl) {
-                    new Audio(Settings.plugins.NotifyVoiceChannel.audioUrl).play().catch(e => console.error("Failed to play audio:", e));
+                if (Settings.plugins.NotifyVoiceChannel.playAudio && Settings.plugins.NotifyVoiceChannel.audioPath) {
+                    let path = Settings.plugins.NotifyVoiceChannel.audioPath;
+                    if (!path.startsWith("http") && !path.startsWith("file://")) {
+                        path = "file:///" + path.replace(/\\/g, "/");
+                    }
+                    new Audio(path).play().catch(e => console.error("Failed to play audio:", e));
                 }
 
                 sendPushoverNotification("Discordボイチャ通知", message);
