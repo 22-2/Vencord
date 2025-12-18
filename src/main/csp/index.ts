@@ -12,7 +12,8 @@ type PolicyMap = Record<string, string[]>;
 export const ConnectSrc = ["connect-src"];
 export const ImageSrc = [...ConnectSrc, "img-src"];
 export const CssSrc = ["style-src", "font-src"];
-export const ImageAndCssSrc = [...ImageSrc, ...CssSrc];
+export const MediaSrc = ["media-src"];
+export const ImageAndCssSrc = [...ImageSrc, ...CssSrc, ...MediaSrc];
 export const ImageScriptsAndCssSrc = [...ImageAndCssSrc, "script-src", "worker-src"];
 
 // Plugins can whitelist their own domains by importing this object in their native.ts

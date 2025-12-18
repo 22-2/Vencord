@@ -89,7 +89,7 @@ async function flushNotifications() {
 
     const message = notifications.length > 1
         ? "複数の入室を確認しました:\n" + notifications.join("\n")
-        : pendingNotifications[0];
+        : notifications[0];
 
     // Native Notification
     if ("Notification" in window) {
@@ -203,7 +203,7 @@ export default definePlugin({
         },
         audioPath: {
             type: OptionType.STRING,
-            description: "再生する音声ファイルのパス (C:\\path\\to\\file.mp3)",
+            description: "再生する音声のURLまたはパス (https://.../file.mp3)",
             default: ""
         },
         ignoredUserIds: {
