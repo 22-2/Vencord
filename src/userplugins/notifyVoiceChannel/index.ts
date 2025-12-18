@@ -48,6 +48,45 @@ async function sendPushoverNotification(title: string, message: string) {
     }
 }
 
+let pendingNotifications: string[] = [];
+let notificationTimeout: number | null = null;
+
+function flushNotifications() {
+    if (pendingNotifications.length === 0) return;
+
+    const message = pendingNotifications.length > 1
+        ? "複数の入室を確認しました:\n" + pendingNotifications.join("\n")
+        : pendingNotifications[0];
+
+    // ネイティブ通知
+    if ("Notification" in window) {
+        if (Notification.permission === "granted") {
+            new Notification("ボイチャ通知", { body: message });
+        } else if (Notification.permission !== "denied") {
+            Notification.requestPermission().then(permission => {
+                if (permission === "granted") {
+                    new Notification("ボイチャ通知", { body: message });
+                }
+            });
+        }
+    }
+
+    // 音声再生
+    if (Settings.plugins.NotifyVoiceChannel.playAudio && Settings.plugins.NotifyVoiceChannel.audioPath) {
+        let path = Settings.plugins.NotifyVoiceChannel.audioPath;
+        if (!path.startsWith("http") && !path.startsWith("file://")) {
+            path = "file:///" + path.replace(/\\/g, "/");
+        }
+        new Audio(path).play().catch(e => console.error("Failed to play audio:", e));
+    }
+
+    // Pushover
+    sendPushoverNotification("Discordボイチャ通知", message);
+
+    pendingNotifications = [];
+    notificationTimeout = null;
+}
+
 const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
     if (!channel || channel.type !== 2) return; // 2 is GUILD_VOICE
 
@@ -163,29 +202,11 @@ export default definePlugin({
                 const channelName = target.name || channel?.name || "Unknown Channel";
 
                 const message = `${userName} が ${guildName} の「${channelName}」で通話を開始しました！`;
+                pendingNotifications.push(message);
 
-                // ネイティブ通知
-                if ("Notification" in window) {
-                    if (Notification.permission === "granted") {
-                        new Notification("ボイチャ通知", { body: message });
-                    } else if (Notification.permission !== "denied") {
-                        Notification.requestPermission().then(permission => {
-                            if (permission === "granted") {
-                                new Notification("ボイチャ通知", { body: message });
-                            }
-                        });
-                    }
+                if (notificationTimeout === null) {
+                    notificationTimeout = window.setTimeout(flushNotifications, 3000);
                 }
-
-                if (Settings.plugins.NotifyVoiceChannel.playAudio && Settings.plugins.NotifyVoiceChannel.audioPath) {
-                    let path = Settings.plugins.NotifyVoiceChannel.audioPath;
-                    if (!path.startsWith("http") && !path.startsWith("file://")) {
-                        path = "file:///" + path.replace(/\\/g, "/");
-                    }
-                    new Audio(path).play().catch(e => console.error("Failed to play audio:", e));
-                }
-
-                sendPushoverNotification("Discordボイチャ通知", message);
             }
         }
     }
