@@ -77,15 +77,21 @@ async function sendPushoverNotification(title: string, message: string) {
     }
 }
 
-let pendingNotifications: string[] = [];
+let pendingNotifications: Array<string | undefined | null> = [];
 let notificationTimeout: number | null = null;
 
 async function flushNotifications() {
     if (pendingNotifications.length === 0) return;
 
-    const notifications = [...pendingNotifications];
+    const notifications = pendingNotifications
+        .map(v => typeof v === "string" ? v : v == null ? "" : String(v))
+        .map(v => v.trim())
+        .filter(Boolean);
+
     pendingNotifications = [];
     notificationTimeout = null;
+
+    if (notifications.length === 0) return;
 
     const message = notifications.length > 1
         ? "複数の入室を確認しました:\n" + notifications.join("\n")
@@ -131,8 +137,12 @@ async function flushNotifications() {
     sendPushoverNotification("Discordボイチャ通知", message);
 }
 
-function queueNotification(message: string) {
-    pendingNotifications.push(message);
+function queueNotification(message: unknown) {
+    const normalized = typeof message === "string" ? message : message == null ? "" : String(message);
+    const trimmed = normalized.trim();
+    if (!trimmed) return;
+
+    pendingNotifications.push(trimmed);
     if (notificationTimeout === null) {
         const delay = Settings.plugins[PLUGIN_NAME].notificationDelay ?? 3000;
         notificationTimeout = window.setTimeout(flushNotifications, delay);
