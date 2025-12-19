@@ -268,6 +268,9 @@ export default definePlugin({
                 const target = targets.find(t => t.guildId === guildId && t.channelId === channelId);
                 if (!target) continue;
 
+                // Don't notify if I'm already in the channel
+                if (userId !== myId && VoiceStateStore.getVoiceState(guildId, myId)?.channelId === channelId) continue;
+
                 if (userId === myId && !settings.notifySelf) continue;
                 if (ignoredIds.includes(userId)) continue;
 
