@@ -19,7 +19,7 @@
 import { Settings } from "@api/Settings";
 import { Devs } from "@utils/constants";
 import definePlugin, { OptionType } from "@utils/types";
-import { ChannelStore, GuildStore, Menu, React, UserStore, VoiceStateStore } from "@webpack/common";
+import { ChannelStore, GuildMemberStore, GuildStore, Menu, React, UserStore, VoiceStateStore } from "@webpack/common";
 import { NavContextMenuPatchCallback } from "@api/ContextMenu";
 
 const PLUGIN_NAME = "NotifyVoiceChannel";
@@ -275,7 +275,8 @@ export default definePlugin({
                 if (ignoredIds.includes(userId)) continue;
 
                 const user = UserStore.getUser(userId);
-                const userName = user?.globalName || user?.username || "Unknown User";
+                const nick = guildId ? GuildMemberStore.getNick(guildId, userId) : null;
+                const userName = nick || user?.globalName || user?.username || "Unknown User";
                 const { guildName, channelName } = getChannelInfo(guildId!, channelId, target.name);
 
                 queueNotification(`${userName} が ${guildName} の「${channelName}」で通話を開始しました！`);
