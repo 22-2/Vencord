@@ -30,7 +30,7 @@ import { classes } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { Message } from "@vencord/discord-types";
 import { findByPropsLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, Menu, MessageStore, Parser, SelectedChannelStore, Timestamp, UserStore, useStateFromStores } from "@webpack/common";
+import { ChannelStore, FluxDispatcher, Menu, MessageCache, MessageStore, Parser, SelectedChannelStore, Timestamp, UserStore, useStateFromStores } from "@webpack/common";
 import { DBSchema, openDB } from "idb";
 
 import overlayStyle from "./deleteStyleOverlay.css?managed";
@@ -42,13 +42,52 @@ interface MessageLoggerDB extends DBSchema {
         key: string;
         value: boolean;
     };
+    messages: {
+        key: string;
+        value: MLMessage;
+        indexes: { "by-channel": string; };
+    };
 }
 
-const dbPromise = openDB<MessageLoggerDB>("MessageLoggerDB", 1, {
-    upgrade(db) {
-        db.createObjectStore("settings");
+const dbPromise = openDB<MessageLoggerDB>("MessageLoggerDB", 2, {
+    upgrade(db, oldVersion) {
+        if (oldVersion < 1) {
+            db.createObjectStore("settings");
+        }
+        if (oldVersion < 2) {
+            const messageStore = db.createObjectStore("messages", { keyPath: "id" });
+            messageStore.createIndex("by-channel", "channel_id");
+        }
     },
 });
+
+async function saveMessage(message: MLMessage) {
+    try {
+        const db = await dbPromise;
+        await db.put("messages", message);
+    } catch (e) {
+        new Logger("MessageLogger").error("Failed to save message", e);
+    }
+}
+
+async function getMessagesForChannel(channelId: string) {
+    try {
+        const db = await dbPromise;
+        return await db.getAllFromIndex("messages", "by-channel", channelId);
+    } catch (e) {
+        new Logger("MessageLogger").error("Failed to get messages", e);
+        return [];
+    }
+}
+
+async function deleteMessageFromDB(messageId: string) {
+    try {
+        const db = await dbPromise;
+        await db.delete("messages", messageId);
+    } catch (e) {
+        new Logger("MessageLogger").error("Failed to delete message", e);
+    }
+}
 
 const monitoringCache = new Map<string, boolean>();
 
@@ -143,6 +182,7 @@ const patchMessageContextMenu: NavContextMenuPatchCallback = (children, props) =
                     });
                 } else {
                     message.editHistory = [];
+                    deleteMessageFromDB(id);
                 }
             }}
         />
@@ -168,10 +208,12 @@ const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channe
                             id: msg.id,
                             mlDeleted: true
                         });
-                    else
+                    else {
                         updateMessage(channel.id, msg.id, {
                             editHistory: []
                         });
+                        deleteMessageFromDB(msg.id);
+                    }
                 });
             }}
         />
@@ -241,6 +283,31 @@ export default definePlugin({
     authors: [Devs.rushii, Devs.Ven, Devs.AutumnVN, Devs.Nickyux, Devs.Kyuuhachi],
     dependencies: ["MessageUpdaterAPI"],
 
+    saveMessage,
+    getMessagesForChannel,
+    deleteMessageFromDB,
+
+    onLoadMessages: async ({ channelId }: { channelId: string; }) => {
+        const savedMessages = await getMessagesForChannel(channelId);
+        if (!savedMessages.length) return;
+
+        const cache = MessageCache.getOrCreate(channelId);
+        let newCache = cache;
+        for (const msg of savedMessages) {
+            if (!newCache.has(msg.id)) {
+                newCache = newCache.receiveMessage(msg);
+            }
+        }
+
+        if (newCache !== cache) {
+            MessageCache.commit(newCache);
+            // We don't need to emitChange here because we are likely in a dispatch
+            // and MessageStore will emitChange anyway after the dispatch.
+            // But if we are async, we might need it.
+            MessageStore.emitChange();
+        }
+    },
+
     contextMenus: {
         "message": patchMessageContextMenu,
         "channel-context": (children, props) => {
@@ -259,6 +326,13 @@ export default definePlugin({
     start() {
         addDeleteStyle();
         loadMonitoringSettings();
+        FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", this.onLoadMessages);
+        FluxDispatcher.subscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.onLoadMessages);
+    },
+
+    stop() {
+        FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", this.onLoadMessages);
+        FluxDispatcher.unsubscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.onLoadMessages);
     },
 
     renderEdits: ErrorBoundary.wrap(({ message: { id: messageId, channel_id: channelId } }: { message: Message; }) => {
@@ -367,10 +441,15 @@ export default definePlugin({
 
                 if (shouldIgnore) {
                     cache = cache.remove(id);
+                    deleteMessageFromDB(id);
                 } else {
-                    cache = cache.update(id, m => m
-                        .set("deleted", true)
-                        .set("attachments", m.attachments.map(a => (a.deleted = true, a))));
+                    cache = cache.update(id, m => {
+                        const updated = m
+                            .set("deleted", true)
+                            .set("attachments", m.attachments.map(a => (a.deleted = true, a)));
+                        saveMessage(updated.toJS());
+                        return updated;
+                    });
                 }
             };
 
@@ -478,12 +557,15 @@ export default definePlugin({
                     // Add current cached content + new edit time to cached message's editHistory
                     match: /(function (\i)\((\i)\).+?)\.update\((\i)(?=.*MESSAGE_UPDATE:\2)/,
                     replace: "$1" +
-                        ".update($4,m =>" +
-                        "   (($3.message.flags & 64) === 64 || $self.shouldIgnore($3.message, true)) ? m :" +
-                        "   $3.message.edited_timestamp && $3.message.content !== m.content ?" +
-                        "       m.set('editHistory',[...(m.editHistory || []), $self.makeEdit($3.message, m)]) :" +
-                        "       m" +
-                        ")" +
+                        ".update($4,m => {" +
+                        "   if ((($3.message.flags & 64) === 64 || $self.shouldIgnore($3.message, true))) return m;" +
+                        "   if ($3.message.edited_timestamp && $3.message.content !== m.content) {" +
+                        "       const updated = m.set('editHistory',[...(m.editHistory || []), $self.makeEdit($3.message, m)]);" +
+                        "       $self.saveMessage(updated.toJS());" +
+                        "       return updated;" +
+                        "   }" +
+                        "   return m;" +
+                        "})" +
                         ".update($4"
                 },
                 {
