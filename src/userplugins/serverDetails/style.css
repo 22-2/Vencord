@@ -1,0 +1,46 @@
+.vc-server-details-tooltip {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 4px;
+    min-width: 180px;
+}
+
+.vc-server-details-icon {
+    width: 48px;
+    height: 48px;
+    border-radius: 16px;
+    margin-bottom: 8px;
+}
+
+.vc-server-details-icon-fallback {
+    width: 48px;
+    height: 48px;
+    border-radius: 16px;
+    background-color: var(--background-secondary);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 18px;
+    margin-bottom: 8px;
+}
+
+.vc-server-details-row {
+    display: flex;
+    justify-content: space-between;
+    width: 100%;
+    font-size: 12px;
+    line-height: 16px;
+    gap: 12px;
+    white-space: nowrap;
+}
+
+.vc-server-details-label {
+    font-weight: 700;
+    color: var(--header-secondary);
+}
+
+.vc-server-details-value {
+    color: var(--text-normal);
+    text-align: right;
+}
