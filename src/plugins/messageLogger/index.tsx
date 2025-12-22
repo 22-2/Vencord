@@ -30,7 +30,7 @@ import { classes } from "@utils/misc";
 import definePlugin, { OptionType } from "@utils/types";
 import { Message } from "@vencord/discord-types";
 import { findByPropsLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, Menu, MessageCache, MessageStore, Parser, SelectedChannelStore, Timestamp, UserStore, useStateFromStores } from "@webpack/common";
+import { ChannelStore, FluxDispatcher, Menu, MessageCache, MessageStore, Parser, SelectedChannelStore, Timestamp, UserStore, useStateFromStores, moment } from "@webpack/common";
 import { DBSchema, openDB } from "idb";
 
 import overlayStyle from "./deleteStyleOverlay.css?managed";
@@ -126,8 +126,9 @@ function isMonitored(guildId: string | undefined, channelId: string): boolean {
 
 interface MLMessage extends Message {
     deleted?: boolean;
-    editHistory?: { timestamp: Date; content: string; }[];
-    firstEditTimestamp?: Date;
+    editHistory?: { timestamp: Date | any; content: string; }[];
+    firstEditTimestamp?: Date | any;
+    edited_timestamp?: any;
 }
 
 const styles = findByPropsLazy("edited", "communicationDisabled", "isSystemMessage");
@@ -291,21 +292,55 @@ export default definePlugin({
         const savedMessages = await getMessagesForChannel(channelId);
         if (!savedMessages.length) return;
 
-        const cache = MessageCache.getOrCreate(channelId);
-        let newCache = cache;
-        for (const msg of savedMessages) {
-            if (!newCache.has(msg.id)) {
-                newCache = newCache.receiveMessage(msg);
-            }
+        let cache = MessageCache.getOrCreate(channelId);
+        const currentMessages = cache.toArray();
+        const messageMap = new Map<string, any>();
+
+        for (const msg of currentMessages) {
+            messageMap.set(msg.id, msg);
         }
 
-        if (newCache !== cache) {
-            MessageCache.commit(newCache);
-            // We don't need to emitChange here because we are likely in a dispatch
-            // and MessageStore will emitChange anyway after the dispatch.
-            // But if we are async, we might need it.
-            MessageStore.emitChange();
+        for (const msg of savedMessages) {
+            if (typeof msg.timestamp === "string") {
+                msg.timestamp = moment(msg.timestamp);
+            }
+
+            if (msg.edited_timestamp != null) {
+                msg.editedTimestamp = msg.edited_timestamp;
+            }
+            if (typeof msg.editedTimestamp === "string") {
+                msg.editedTimestamp = moment(msg.editedTimestamp) as any;
+            }
+
+            if (typeof msg.firstEditTimestamp === "string") {
+                msg.firstEditTimestamp = moment(msg.firstEditTimestamp);
+            }
+
+            if (Array.isArray(msg.editHistory)) {
+                for (const edit of msg.editHistory) {
+                    if (typeof edit.timestamp === "string") {
+                        edit.timestamp = moment(edit.timestamp);
+                    }
+                }
+            }
+
+            messageMap.set(msg.id, msg);
         }
+
+        const sortedMessages = Array.from(messageMap.values()).sort((a, b) => {
+            return a.timestamp.valueOf() - b.timestamp.valueOf();
+        });
+
+        for (const msg of currentMessages) {
+            cache = cache.remove(msg.id);
+        }
+
+        for (const msg of sortedMessages) {
+            cache = cache.receiveMessage(msg);
+        }
+
+        MessageCache.commit(cache);
+        MessageStore.emitChange();
     },
 
     contextMenus: {
