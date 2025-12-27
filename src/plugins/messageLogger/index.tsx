@@ -37,6 +37,35 @@ import overlayStyle from "./deleteStyleOverlay.css?managed";
 import textStyle from "./deleteStyleText.css?managed";
 import { openHistoryModal } from "./HistoryModal";
 
+function normalizePersistedMessage(msg: any) {
+    if (!msg) return;
+
+    // Persisted messages may have timestamps as strings (from IDB) depending on how they were stored.
+    if (typeof msg.timestamp === "string") {
+        msg.timestamp = moment(msg.timestamp);
+    }
+
+    // Some persisted shapes use snake_case edited_timestamp.
+    if (msg.edited_timestamp != null && msg.editedTimestamp == null) {
+        msg.editedTimestamp = msg.edited_timestamp;
+    }
+    if (typeof msg.editedTimestamp === "string") {
+        msg.editedTimestamp = moment(msg.editedTimestamp) as any;
+    }
+
+    if (typeof msg.firstEditTimestamp === "string") {
+        msg.firstEditTimestamp = moment(msg.firstEditTimestamp) as any;
+    }
+
+    if (Array.isArray(msg.editHistory)) {
+        for (const edit of msg.editHistory) {
+            if (typeof edit?.timestamp === "string") {
+                edit.timestamp = moment(edit.timestamp) as any;
+            }
+        }
+    }
+}
+
 interface MessageLoggerDB extends DBSchema {
     settings: {
         key: string;
@@ -288,59 +317,38 @@ export default definePlugin({
     getMessagesForChannel,
     deleteMessageFromDB,
 
-    onLoadMessages: async ({ channelId }: { channelId: string; }) => {
+    handleLoadMessages: async (action: any) => {
+        const { channelId, messages, hasMoreBefore, hasMoreAfter } = action;
+        if (!messages?.length) return;
+
         const savedMessages = await getMessagesForChannel(channelId);
         if (!savedMessages.length) return;
 
         let cache = MessageCache.getOrCreate(channelId);
-        const currentMessages = cache.toArray();
-        const messageMap = new Map<string, any>();
+        let changed = false;
 
-        for (const msg of currentMessages) {
-            messageMap.set(msg.id, msg);
-        }
+        const times = messages.map((m: any) => moment(m.timestamp).valueOf());
+        const minTime = Math.min(...times);
+        const maxTime = Math.max(...times);
+
+        const startTime = !hasMoreBefore ? 0 : minTime;
+        const endTime = !hasMoreAfter ? Infinity : maxTime;
 
         for (const msg of savedMessages) {
-            if (typeof msg.timestamp === "string") {
-                msg.timestamp = moment(msg.timestamp);
-            }
+            normalizePersistedMessage(msg);
+            const t = msg.timestamp.valueOf();
 
-            if (msg.edited_timestamp != null) {
-                msg.editedTimestamp = msg.edited_timestamp;
+            if (t >= startTime && t <= endTime) {
+                if (cache.has(msg.id)) continue;
+                cache = cache.receiveMessage(msg);
+                changed = true;
             }
-            if (typeof msg.editedTimestamp === "string") {
-                msg.editedTimestamp = moment(msg.editedTimestamp) as any;
-            }
-
-            if (typeof msg.firstEditTimestamp === "string") {
-                msg.firstEditTimestamp = moment(msg.firstEditTimestamp);
-            }
-
-            if (Array.isArray(msg.editHistory)) {
-                for (const edit of msg.editHistory) {
-                    if (typeof edit.timestamp === "string") {
-                        edit.timestamp = moment(edit.timestamp);
-                    }
-                }
-            }
-
-            messageMap.set(msg.id, msg);
         }
 
-        const sortedMessages = Array.from(messageMap.values()).sort((a, b) => {
-            return a.timestamp.valueOf() - b.timestamp.valueOf();
-        });
-
-        for (const msg of currentMessages) {
-            cache = cache.remove(msg.id);
+        if (changed) {
+            MessageCache.commit(cache);
+            MessageStore.emitChange();
         }
-
-        for (const msg of sortedMessages) {
-            cache = cache.receiveMessage(msg);
-        }
-
-        MessageCache.commit(cache);
-        MessageStore.emitChange();
     },
 
     contextMenus: {
@@ -361,13 +369,13 @@ export default definePlugin({
     start() {
         addDeleteStyle();
         loadMonitoringSettings();
-        FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", this.onLoadMessages);
-        FluxDispatcher.subscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.onLoadMessages);
+        FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", this.handleLoadMessages);
+        FluxDispatcher.subscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.handleLoadMessages);
     },
 
     stop() {
-        FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", this.onLoadMessages);
-        FluxDispatcher.unsubscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.onLoadMessages);
+        FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", this.handleLoadMessages);
+        FluxDispatcher.unsubscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.handleLoadMessages);
     },
 
     renderEdits: ErrorBoundary.wrap(({ message: { id: messageId, channel_id: channelId } }: { message: Message; }) => {
