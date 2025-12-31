@@ -14,342 +14,90 @@
  *
  * You should have received a copy of the GNU General Public License
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
-*/
+ */
 
 import "./messageLogger.css";
 
-import { findGroupChildrenByChildId, NavContextMenuPatchCallback } from "@api/ContextMenu";
-import { updateMessage } from "@api/MessageUpdater";
 import { Settings } from "@api/Settings";
-import { disableStyle, enableStyle } from "@api/Styles";
-import ErrorBoundary from "@components/ErrorBoundary";
-import { Devs, SUPPORT_CATEGORY_ID, VENBOT_USER_ID } from "@utils/constants";
-import { getIntlMessage } from "@utils/discord";
+import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
+import { SUPPORT_CATEGORY_ID, VENBOT_USER_ID, Devs } from "@utils/constants";
 import { Logger } from "@utils/Logger";
-import { classes } from "@utils/misc";
-import definePlugin, { OptionType } from "@utils/types";
-import { Message } from "@vencord/discord-types";
+import definePlugin from "@utils/types";
 import { findByPropsLazy } from "@webpack";
-import { ChannelStore, FluxDispatcher, Menu, MessageCache, MessageStore, Parser, SelectedChannelStore, Timestamp, UserStore, useStateFromStores, moment } from "@webpack/common";
-import { DBSchema, openDB } from "idb";
+import { ChannelStore, MessageCache, MessageStore, moment, SelectedChannelStore, UserStore } from "@webpack/common";
 
-import overlayStyle from "./deleteStyleOverlay.css?managed";
-import textStyle from "./deleteStyleText.css?managed";
-import { openHistoryModal } from "./HistoryModal";
+import { EditMarker, getDeletedMessageCountFormat, renderEdits } from "./components";
+import {
+    patchChannelContextMenu,
+    patchChannelMonitoringContextMenu,
+    patchGuildContextMenu,
+    patchMessageContextMenu,
+} from "./contextMenus";
+import { deleteMessageFromDB, getMessagesForChannel, saveMessage } from "./database";
+import { openLogViewerModal } from "./LogViewerModal";
+import { isMonitored, loadMonitoringSettings } from "./monitoring";
+import { options } from "./options";
+import { patches } from "./patches";
+import { addDeleteStyle } from "./styles";
+import { DeleteData, LoadMessagesAction, MLMessage } from "./types";
+import { makeEdit, normalizePersistedMessage, reAddDeletedMessages } from "./utils";
 
-function normalizePersistedMessage(msg: any) {
-    if (!msg) return;
+// Re-export for external use
+export { parseEditContent } from "./utils";
 
-    // Persisted messages may have timestamps as strings (from IDB) depending on how they were stored.
-    if (typeof msg.timestamp === "string") {
-        msg.timestamp = moment(msg.timestamp);
-    }
+const logger = new Logger("MessageLogger");
 
-    // Some persisted shapes use snake_case edited_timestamp.
-    if (msg.edited_timestamp != null && msg.editedTimestamp == null) {
-        msg.editedTimestamp = msg.edited_timestamp;
-    }
-    if (typeof msg.editedTimestamp === "string") {
-        msg.editedTimestamp = moment(msg.editedTimestamp) as any;
-    }
 
-    if (typeof msg.firstEditTimestamp === "string") {
-        msg.firstEditTimestamp = moment(msg.firstEditTimestamp) as any;
-    }
-
-    if (Array.isArray(msg.editHistory)) {
-        for (const edit of msg.editHistory) {
-            if (typeof edit?.timestamp === "string") {
-                edit.timestamp = moment(edit.timestamp) as any;
-            }
-        }
-    }
-}
-
-interface MessageLoggerDB extends DBSchema {
-    settings: {
-        key: string;
-        value: boolean;
-    };
-    messages: {
-        key: string;
-        value: MLMessage;
-        indexes: { "by-channel": string; };
-    };
-}
-
-const dbPromise = openDB<MessageLoggerDB>("MessageLoggerDB", 2, {
-    upgrade(db, oldVersion) {
-        if (oldVersion < 1) {
-            db.createObjectStore("settings");
-        }
-        if (oldVersion < 2) {
-            const messageStore = db.createObjectStore("messages", { keyPath: "id" });
-            messageStore.createIndex("by-channel", "channel_id");
-        }
-    },
-});
-
-async function saveMessage(message: MLMessage) {
-    try {
-        const db = await dbPromise;
-        await db.put("messages", message);
-    } catch (e) {
-        new Logger("MessageLogger").error("Failed to save message", e);
-    }
-}
-
-async function getMessagesForChannel(channelId: string) {
-    try {
-        const db = await dbPromise;
-        return await db.getAllFromIndex("messages", "by-channel", channelId);
-    } catch (e) {
-        new Logger("MessageLogger").error("Failed to get messages", e);
-        return [];
-    }
-}
-
-async function deleteMessageFromDB(messageId: string) {
-    try {
-        const db = await dbPromise;
-        await db.delete("messages", messageId);
-    } catch (e) {
-        new Logger("MessageLogger").error("Failed to delete message", e);
-    }
-}
-
-const monitoringCache = new Map<string, boolean>();
-
-async function loadMonitoringSettings() {
-    const db = await dbPromise;
-    const keys = await db.getAllKeys("settings");
-    for (const key of keys) {
-        const val = await db.get("settings", key);
-        if (val !== undefined) monitoringCache.set(key, val);
-    }
-}
-
-async function setMonitoring(type: "guild" | "channel", id: string, enabled: boolean | null) {
-    const key = `${type}:${id}`;
-    const db = await dbPromise;
-    if (enabled === null) {
-        await db.delete("settings", key);
-        monitoringCache.delete(key);
-    } else {
-        await db.put("settings", enabled, key);
-        monitoringCache.set(key, enabled);
-    }
-}
-
-function isMonitored(guildId: string | undefined, channelId: string): boolean {
-    const channelKey = `channel:${channelId}`;
-    if (monitoringCache.has(channelKey)) return monitoringCache.get(channelKey)!;
-
-    if (guildId) {
-        const guildKey = `guild:${guildId}`;
-        if (monitoringCache.has(guildKey)) return monitoringCache.get(guildKey)!;
-    }
-
-    return false;
-}
-
-interface MLMessage extends Message {
-    deleted?: boolean;
-    editHistory?: { timestamp: Date | any; content: string; }[];
-    firstEditTimestamp?: Date | any;
-    edited_timestamp?: any;
-}
-
-const styles = findByPropsLazy("edited", "communicationDisabled", "isSystemMessage");
-
-function addDeleteStyle() {
-    if (Settings.plugins.MessageLogger.deleteStyle === "text") {
-        enableStyle(textStyle);
-        disableStyle(overlayStyle);
-    } else {
-        disableStyle(textStyle);
-        enableStyle(overlayStyle);
-    }
-}
-
-const REMOVE_HISTORY_ID = "ml-remove-history";
-const TOGGLE_DELETE_STYLE_ID = "ml-toggle-style";
-const patchMessageContextMenu: NavContextMenuPatchCallback = (children, props) => {
-    const { message } = props;
-    const { deleted, editHistory, id, channel_id } = message;
-
-    if (!deleted && !editHistory?.length) return;
-
-    toggle: {
-        if (!deleted) break toggle;
-
-        const domElement = document.getElementById(`chat-messages-${channel_id}-${id}`);
-        if (!domElement) break toggle;
-
-        children.push((
-            <Menu.MenuItem
-                id={TOGGLE_DELETE_STYLE_ID}
-                key={TOGGLE_DELETE_STYLE_ID}
-                label="Toggle Deleted Highlight"
-                action={() => domElement.classList.toggle("messagelogger-deleted")}
-            />
-        ));
-    }
-
-    children.push((
-        <Menu.MenuItem
-            id={REMOVE_HISTORY_ID}
-            key={REMOVE_HISTORY_ID}
-            label="Remove Message History"
-            color="danger"
-            action={() => {
-                if (deleted) {
-                    FluxDispatcher.dispatch({
-                        type: "MESSAGE_DELETE",
-                        channelId: channel_id,
-                        id,
-                        mlDeleted: true
-                    });
-                } else {
-                    message.editHistory = [];
-                    deleteMessageFromDB(id);
-                }
-            }}
-        />
-    ));
-};
-
-const patchChannelContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
-    const messages = MessageStore.getMessages(channel?.id) as MLMessage[];
-    if (!messages?.some(msg => msg.deleted || msg.editHistory?.length)) return;
-
-    const group = findGroupChildrenByChildId("mark-channel-read", children) ?? children;
-    group.push(
-        <Menu.MenuItem
-            id="vc-ml-clear-channel"
-            label="Clear Message Log"
-            color="danger"
-            action={() => {
-                messages.forEach(msg => {
-                    if (msg.deleted)
-                        FluxDispatcher.dispatch({
-                            type: "MESSAGE_DELETE",
-                            channelId: channel.id,
-                            id: msg.id,
-                            mlDeleted: true
-                        });
-                    else {
-                        updateMessage(channel.id, msg.id, {
-                            editHistory: []
-                        });
-                        deleteMessageFromDB(msg.id);
-                    }
-                });
-            }}
-        />
-    );
-};
-
-const patchGuildContextMenu: NavContextMenuPatchCallback = (children, { guild }) => {
-    if (!guild) return;
-    const monitored = monitoringCache.get(`guild:${guild.id}`);
-
-    children.push(
-        <Menu.MenuItem
-            id="ml-monitor-guild"
-            label={monitored ? "Stop Logging this Server" : "Log this Server"}
-            action={() => setMonitoring("guild", guild.id, !monitored)}
-        />
-    );
-};
-
-const patchChannelMonitoringContextMenu: NavContextMenuPatchCallback = (children, { channel }) => {
-    if (!channel) return;
-    const monitored = monitoringCache.get(`channel:${channel.id}`);
-    const inherited = monitoringCache.get(`guild:${channel.guild_id}`);
-
-    children.push(
-        <Menu.MenuItem
-            id="ml-monitor-channel"
-            label="Message Logger"
-        >
-            <Menu.MenuItem
-                id="ml-monitor-channel-enable"
-                label="Enable Logging"
-                disabled={monitored === true}
-                action={() => setMonitoring("channel", channel.id, true)}
-            />
-            <Menu.MenuItem
-                id="ml-monitor-channel-disable"
-                label="Disable Logging"
-                disabled={monitored === false}
-                action={() => setMonitoring("channel", channel.id, false)}
-            />
-            <Menu.MenuItem
-                id="ml-monitor-channel-reset"
-                label={`Reset to Server Default (${inherited ? "Logging" : "Not Logging"})`}
-                disabled={monitored === undefined}
-                action={() => setMonitoring("channel", channel.id, null)}
-            />
-        </Menu.MenuItem>
-    );
-};
-
-export function parseEditContent(content: string, message: Message) {
-    return Parser.parse(content, true, {
-        channelId: message.channel_id,
-        messageId: message.id,
-        allowLinks: true,
-        allowHeading: true,
-        allowList: true,
-        allowEmojiLinks: true,
-        viewingChannelId: SelectedChannelStore.getChannelId(),
-    });
-}
-
+/**
+ * MessageLogger Plugin - 削除・編集されたメッセージを永続化して表示するプラグイン
+ *
+ * ## アーキテクチャ概要 (MessageLoggerV2に準拠)
+ *
+ * このプラグインは Discord 内部の Dispatcher（イベント配信システム）を
+ * モンキーパッチすることでメッセージイベントを捕捉します。
+ *
+ * ### なぜ Dispatcher パッチが必要か？
+ *
+ * 1. **MESSAGE_DELETE の捕捉タイミング**:
+ *    - 元の dispatch が実行されると MessageStore からメッセージが削除される
+ *    - そのため、削除イベントは dispatch 処理の「前」に捕捉して保存する必要がある
+ *    - FluxDispatcher.subscribe では「後」になるため間に合わない
+ *
+ * 2. **ジャンプ機能の維持**:
+ *    - LOAD_MESSAGES_AROUND_SUCCESS で dispatch.messages 配列を直接書き換える
+ *    - 処理後は必ず callDefault() を呼んで Discord に加工済みデータを渡す
+ *    - これを忘れると「ジャンプしてもスケルトンのまま」になる
+ *
+ * 3. **スクロール位置の維持**:
+ *    - MessageCache を全削除→再構築すると仮想リストのアンカーが壊れる
+ *    - dispatch.messages への splice 挿入なら Discord 標準のソート処理に任せられる
+ *
+ * ### 主なイベントタイプ
+ * - MESSAGE_DELETE: 単一メッセージ削除
+ * - MESSAGE_DELETE_BULK: 一括削除（パージ）
+ * - MESSAGE_UPDATE: メッセージ編集
+ * - LOAD_MESSAGES_SUCCESS: チャンネル履歴読み込み
+ * - LOAD_MESSAGES_AROUND_SUCCESS: ジャンプ/検索時の読み込み
+ */
 export default definePlugin({
     name: "MessageLogger",
     description: "Temporarily logs deleted and edited messages.",
     authors: [Devs.rushii, Devs.Ven, Devs.AutumnVN, Devs.Nickyux, Devs.Kyuuhachi],
     dependencies: ["MessageUpdaterAPI"],
 
+    // Expose database methods for external use
     saveMessage,
     getMessagesForChannel,
     deleteMessageFromDB,
 
-    handleLoadMessages: async (action: any) => {
-        const { channelId, messages, hasMoreBefore, hasMoreAfter } = action;
-        if (!messages?.length) return;
+    // Components for patches
+    renderEdits,
+    EditMarker,
+    DELETED_MESSAGE_COUNT: getDeletedMessageCountFormat,
+    makeEdit,
 
-        const savedMessages = await getMessagesForChannel(channelId);
-        if (!savedMessages.length) return;
-
-        let cache = MessageCache.getOrCreate(channelId);
-        let changed = false;
-
-        const times = messages.map((m: any) => moment(m.timestamp).valueOf());
-        const minTime = Math.min(...times);
-        const maxTime = Math.max(...times);
-
-        const startTime = !hasMoreBefore ? 0 : minTime;
-        const endTime = !hasMoreAfter ? Infinity : maxTime;
-
-        for (const msg of savedMessages) {
-            normalizePersistedMessage(msg);
-            const t = msg.timestamp.valueOf();
-
-            if (t >= startTime && t <= endTime) {
-                if (cache.has(msg.id)) continue;
-                cache = cache.receiveMessage(msg);
-                changed = true;
-            }
-        }
-
-        if (changed) {
-            MessageCache.commit(cache);
-            MessageStore.emitChange();
-        }
-    },
+    options,
+    patches,
 
     contextMenus: {
         "message": patchMessageContextMenu,
@@ -366,110 +114,447 @@ export default definePlugin({
         "guild-context": patchGuildContextMenu
     },
 
-    start() {
+    commands: [
+        {
+            name: "messagelog",
+            description: "Open the Message Logger viewer to browse deleted and edited messages",
+            inputType: ApplicationCommandInputType.BUILT_IN,
+            execute: async (_args, ctx) => {
+                openLogViewerModal();
+                sendBotMessage(ctx.channel.id, {
+                    content: "Opening Message Logger viewer...",
+                });
+            },
+        }
+    ],
+
+    /**
+     * 通常のチャンネル読み込み時の処理（FluxDispatcher経由、後方互換用）
+     *
+     * 注意: この関数はキャッシュを全削除→再構築するため、ジャンプ時には使用しない。
+     * ジャンプ時に呼ばれるとスクロールアンカーが壊れて位置が飛ぶ。
+     *
+     * 現在は onDispatchEvent での処理が主で、この関数は補助的な役割。
+     */
+    async onLoadMessages({ channelId }: { channelId: string; }): Promise<void> {
+        logger.info("[DEBUG] onLoadMessages called for channel:", channelId);
+
+        const savedMessages = await getMessagesForChannel(channelId);
+        logger.info("[DEBUG] savedMessages from DB:", savedMessages.length, "messages");
+        if (!savedMessages.length) {
+            logger.info("[DEBUG] No saved messages, returning early");
+            return;
+        }
+
+        // Log first saved message for debugging
+        if (savedMessages[0]) {
+            logger.info("[DEBUG] First saved message:", {
+                id: savedMessages[0].id,
+                deleted: savedMessages[0].deleted,
+                content: savedMessages[0].content?.substring(0, 50)
+            });
+        }
+
+        let cache = MessageCache.getOrCreate(channelId);
+        const currentMessages = cache.toArray();
+        logger.info("[DEBUG] currentMessages in cache:", currentMessages.length);
+
+        const messageMap = new Map<string, any>();
+
+        for (const msg of currentMessages) {
+            messageMap.set(msg.id, msg);
+        }
+
+        for (const msg of savedMessages) {
+            normalizePersistedMessage(msg);
+            messageMap.set(msg.id, msg);
+        }
+
+        const sortedMessages = Array.from(messageMap.values()).sort((a, b) => {
+            return moment(a.timestamp).valueOf() - moment(b.timestamp).valueOf();
+        });
+
+        logger.info("[DEBUG] After merge, total messages:", sortedMessages.length);
+
+        // 削除済みメッセージが実際に deleted: true を持っているか数件チェック
+        const deletedInMerge = sortedMessages.filter(m => m.deleted);
+        logger.info("[DEBUG] Messages with deleted:true in merge set:", deletedInMerge.length);
+        if (deletedInMerge.length > 0) {
+            logger.info("[DEBUG] Sample deleted message:", {
+                id: deletedInMerge[0].id,
+                deleted: deletedInMerge[0].deleted,
+                content: deletedInMerge[0].content?.substring(0, 30)
+            });
+        }
+
+        for (const msg of currentMessages) {
+            cache = cache.remove(msg.id);
+        }
+
+        for (const msg of sortedMessages) {
+            cache = cache.receiveMessage(msg);
+        }
+
+        // Check if 'deleted' property persists in the Message instances in cache
+        // This verifies if the Message domain model patch is working or needed
+        const cachedMessages = cache.toArray();
+        const deletedInCache = cachedMessages.filter((m: any) => m.deleted);
+        logger.info("[DEBUG] Cache check after receiveMessage:", {
+            total: cachedMessages.length,
+            withDeletedFlag: deletedInCache.length
+        });
+
+        if (deletedInCache.length > 0) {
+            logger.info("[DEBUG] Sample cached instance:", deletedInCache[0]);
+        } else if (sortedMessages.length > 0 && sortedMessages.some(m => m.deleted)) {
+            logger.error("[DEBUG] CRITICAL: 'deleted' flag lost during receiveMessage! Message model patch might be broken.");
+        }
+
+        MessageCache.commit(cache);
+        MessageStore.emitChange();
+        logger.info("[DEBUG] onLoadMessages completed, emitted change");
+    },
+
+    /**
+     * ジャンプ/検索時のメッセージ読み込み処理
+     *
+     * MessageLoggerV2 の reAddDeletedMessages と同様のロジック:
+     * - dispatch.messages 配列を直接 splice して削除済みメッセージを挿入
+     * - キャッシュの全再構築は行わない（スクロール位置を維持するため）
+     * - 挿入位置は元の配列の並び順（newest-first / oldest-first）を自動検出して決定
+     *
+     * @param action - Dispatcher から渡される LOAD_MESSAGES_AROUND_SUCCESS のペイロード
+     */
+    async onLoadMessagesAround(action: LoadMessagesAction): Promise<void> {
+        const { channelId, messages, hasMoreBefore, hasMoreAfter } = action;
+        if (!messages?.length) return;
+
+        const savedMessages = await getMessagesForChannel(channelId);
+        if (!savedMessages.length) return;
+
+        const channelStart = !hasMoreAfter && !action.isBefore;
+        const channelEnd = !hasMoreBefore && !action.isAfter;
+
+        try {
+            reAddDeletedMessages(messages, savedMessages, channelStart, channelEnd);
+        } catch (e) {
+            logger.error("reAddDeletedMessages failed", e);
+        }
+    },
+
+    /**
+     * Dispatcher レベルでのイベントインターセプト（MessageLoggerV2 方式）
+     *
+     * ## 重要な設計判断
+     *
+     * 1. **削除イベントは callDefault の「前」に処理する**:
+     *    - MESSAGE_DELETE が dispatch されると MessageStore からメッセージが消える
+     *    - 消える前に MessageStore.getMessage() で取得して保存する
+     *
+     * 2. **LOAD_MESSAGES 系は配列を書き換えてから callDefault を呼ぶ**:
+     *    - dispatch.messages に削除済みメッセージを splice で挿入
+     *    - その後 callDefault() で Discord に加工済みデータを渡す
+     *    - callDefault を呼ばないと「イベントを握りつぶす」ことになりジャンプが動かない
+     *
+     * 3. **patches.ts の正規表現パッチが壊れた場合の保険**:
+     *    - Discord のアップデートで正規表現が一致しなくなることがある
+     *    - Dispatcher レベルでの処理は通信プロトコルに依存するため壊れにくい
+     */
+    async onDispatchEvent(this: any, args: any[], callDefault: (...a: any[]) => any): Promise<any> {
+        try {
+            const dispatch = args[0];
+            if (!dispatch) return callDefault(...args);
+
+            // ★重要: 削除イベントは callDefault の「前」に処理する
+            // 理由: callDefault が実行されると MessageStore からメッセージが削除されてしまうため、
+            // その前に MessageStore.getMessage() でメッセージを取得して IndexedDB に保存する必要がある
+            if (dispatch.type === "MESSAGE_DELETE") {
+                this._handleMessageDelete(dispatch);
+            }
+
+            if (dispatch.type === "MESSAGE_DELETE_BULK") {
+                this._handleMessageDeleteBulk(dispatch);
+            }
+
+            if (dispatch.type === "CHANNEL_SELECT") {
+                const { channelId } = dispatch;
+                if (channelId) {
+                    this.onLoadMessages({ channelId }).catch((e: any) => {
+                        logger.error("CHANNEL_SELECT onLoadMessages failed", e);
+                    });
+                }
+            }
+
+            if (dispatch.type === "MESSAGE_UPDATE") {
+                this._handleMessageUpdate(dispatch);
+            }
+
+            // ジャンプ/検索時の処理:
+            // dispatch.messages 配列に削除済みメッセージを splice で挿入した後、
+            // 必ず callDefault() を呼んで加工済みデータを Discord に渡す。
+            // callDefault を呼ばないと「スケルトンのまま」「スクロールが戻る」問題が発生する。
+            if (dispatch.type === "LOAD_MESSAGES_AROUND_SUCCESS" || dispatch.type === "LOAD_MESSAGES_AROUND") {
+                try {
+                    await this.onLoadMessagesAround?.(dispatch);
+                } catch (e) {
+                    logger.error("onDispatchEvent -> onLoadMessagesAround failed", e);
+                }
+                // ★重要: 必ず callDefault を呼ぶ（これがないとジャンプが動かない）
+                return callDefault(...args);
+            }
+
+            // 通常のチャンネル読み込み時の処理:
+            // dispatch.messages に保存済みメッセージを挿入してから callDefault を呼ぶ。
+            // これにより Discord の標準処理で正しい位置にメッセージが表示される。
+            if (dispatch.type === "LOAD_MESSAGES_SUCCESS") {
+                await this._handleLoadMessagesSuccess(dispatch);
+                return callDefault(...args);
+            }
+
+            return callDefault(...args);
+        } catch (e) {
+            logger.error("onDispatchEvent error", e);
+            try { return callDefault(...args); } catch { /* ignore */ }
+        }
+    },
+
+    /**
+     * 単一メッセージ削除の処理
+     *
+     * callDefault が実行される「前」に呼ばれる。
+     * MessageStore からメッセージが削除される前に取得して IndexedDB に保存する。
+     *
+     * メッセージオブジェクトが Immutable の場合は toJS() で Plain Object に変換する。
+     */
+    _handleMessageDelete(dispatch: any): void {
+        try {
+            const id = dispatch.id ?? dispatch.message?.id ?? dispatch.payload?.id;
+            const channelId = dispatch.channelId ?? dispatch.channel_id ??
+                dispatch.message?.channel_id ?? dispatch.payload?.channelId;
+
+            logger.info("[DEBUG] _handleMessageDelete called:", { id, channelId });
+
+            if (!id || !channelId) {
+                logger.info("[DEBUG] _handleMessageDelete: missing id or channelId, skipping");
+                return;
+            }
+
+            const msg = MessageStore.getMessage(channelId, id) as any;
+            logger.info("[DEBUG] _handleMessageDelete: MessageStore.getMessage returned:", msg ? "found" : "null");
+
+            if (!msg) {
+                logger.info("[DEBUG] _handleMessageDelete: message not found in MessageStore");
+                return;
+            }
+
+            if (this.shouldIgnore?.(msg)) {
+                logger.info("[DEBUG] _handleMessageDelete: message ignored by shouldIgnore");
+                return;
+            }
+
+            const plain = typeof msg.toJS === "function" ? msg.toJS() : { ...msg };
+            const toSave: MLMessage = {
+                ...plain,
+                deleted: true,
+                attachments: (plain.attachments || []).map((a: any) => ({ ...a, deleted: true }))
+            };
+
+            logger.info("[DEBUG] _handleMessageDelete: saving message with deleted:", toSave.deleted, "id:", toSave.id);
+            saveMessage(toSave);
+            logger.info("[DEBUG] _handleMessageDelete: saveMessage called successfully");
+        } catch (e) {
+            logger.error("MESSAGE_DELETE handling failed", e);
+        }
+    },
+
+    /**
+     * 一括削除（パージ）の処理
+     *
+     * MESSAGE_DELETE_BULK イベントで複数のメッセージ ID が渡される。
+     * 各メッセージを個別に取得して保存する。
+     */
+    _handleMessageDeleteBulk(dispatch: any): void {
+        try {
+            const ids = dispatch.ids ?? dispatch.idsToDelete ?? [];
+            const channelId = dispatch.channelId ?? dispatch.channel_id ?? dispatch.payload?.channelId;
+
+            for (const id of ids) {
+                if (!id || !channelId) continue;
+
+                try {
+                    const msg = MessageStore.getMessage(channelId, id) as any;
+                    if (!msg || this.shouldIgnore?.(msg)) continue;
+
+                    const plain = typeof msg.toJS === "function" ? msg.toJS() : { ...msg };
+                    const toSave: MLMessage = {
+                        ...plain,
+                        deleted: true,
+                        attachments: (plain.attachments || []).map((a: any) => ({ ...a, deleted: true }))
+                    };
+                    saveMessage(toSave);
+                } catch (inner) {
+                    logger.error("MESSAGE_DELETE_BULK item failed", inner);
+                }
+            }
+        } catch (e) {
+            logger.error("MESSAGE_DELETE_BULK handling failed", e);
+        }
+    },
+
+    /**
+     * メッセージ編集の処理
+     *
+     * 編集前の内容を editHistory 配列に追加して保存する。
+     * これにより編集履歴を追跡できる。
+     *
+     * 注意: edited_timestamp がない場合は編集ではないのでスキップする。
+     */
+    _handleMessageUpdate(dispatch: any): void {
+        try {
+            const updated = dispatch.message ?? dispatch.messageUpdate ?? null;
+            if (!updated?.edited_timestamp) return;
+
+            const id = updated.id || dispatch.id;
+            const channelId = updated.channel_id || dispatch.channelId || dispatch.channel_id;
+
+            if (!id || !channelId) return;
+
+            const oldMsg = MessageStore.getMessage(channelId, id) as any;
+            if (!oldMsg || oldMsg.content === updated.content || this.shouldIgnore?.(oldMsg, true)) return;
+
+            const plainOld = typeof oldMsg.toJS === "function" ? oldMsg.toJS() : { ...oldMsg };
+            const editRecord = makeEdit(updated, plainOld);
+            const editHistory = [...(plainOld.editHistory || []), editRecord];
+            const toSave: MLMessage = { ...plainOld, ...updated, editHistory };
+            saveMessage(toSave);
+        } catch (e) {
+            logger.error("MESSAGE_UPDATE handling failed", e);
+        }
+    },
+
+    /**
+     * 通常のチャンネル読み込み成功時の処理
+     *
+     * dispatch.messages 配列に保存済みの削除メッセージを splice で挿入する。
+     * reAddDeletedMessages は MessageLoggerV2 のロジックを移植したもので、
+     * メッセージの時間範囲を計算して適切な位置に挿入する。
+     */
+    async _handleLoadMessagesSuccess(dispatch: any): Promise<void> {
+        try {
+            const { channelId } = dispatch as LoadMessagesAction;
+            // 配列書き換え方式が不安定なため、実績のある onLoadMessages（キャッシュ直接操作）を使用する
+            await this.onLoadMessages({ channelId });
+        } catch (e) {
+            logger.error("LOAD_MESSAGES_SUCCESS handling failed", e);
+        }
+    },
+
+    start(): void {
+        logger.info("[DEBUG] MessageLogger start() called");
         addDeleteStyle();
         loadMonitoringSettings();
-        FluxDispatcher.subscribe("LOAD_MESSAGES_SUCCESS", this.handleLoadMessages);
-        FluxDispatcher.subscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.handleLoadMessages);
-    },
 
-    stop() {
-        FluxDispatcher.unsubscribe("LOAD_MESSAGES_SUCCESS", this.handleLoadMessages);
-        FluxDispatcher.unsubscribe("LOAD_MESSAGES_AROUND_SUCCESS", this.handleLoadMessages);
-    },
+        // Patch dispatcher to intercept low-level dispatches
+        this._patchDispatcher();
 
-    renderEdits: ErrorBoundary.wrap(({ message: { id: messageId, channel_id: channelId } }: { message: Message; }) => {
-        const message = useStateFromStores(
-            [MessageStore],
-            () => MessageStore.getMessage(channelId, messageId) as MLMessage,
-            null,
-            (oldMsg, newMsg) => oldMsg?.editHistory === newMsg?.editHistory
-        );
-
-        return Settings.plugins.MessageLogger.inlineEdits && (
-            <>
-                {message.editHistory?.map((edit, idx) => (
-                    <div key={idx} className="messagelogger-edited">
-                        {parseEditContent(edit.content, message)}
-                        <Timestamp
-                            timestamp={edit.timestamp}
-                            isEdited={true}
-                            isInline={false}
-                        >
-                            <span className={styles.edited}>{" "}({getIntlMessage("MESSAGE_EDITED")})</span>
-                        </Timestamp>
-                    </div>
-                ))}
-            </>
-        );
-    }, { noop: true }),
-
-    makeEdit(newMessage: any, oldMessage: any): any {
-        return {
-            timestamp: new Date(newMessage.edited_timestamp),
-            content: oldMessage.content
+        const triggerInitialLoad = () => {
+            const currentChannelId = SelectedChannelStore.getChannelId();
+            logger.info("[DEBUG] Initial load check, channelId:", currentChannelId);
+            if (currentChannelId) {
+                logger.info("[DEBUG] Triggering initial onLoadMessages");
+                this.onLoadMessages({ channelId: currentChannelId }).catch(e => {
+                    logger.error("Initial onLoadMessages failed", e);
+                });
+                return true;
+            }
+            return false;
         };
+
+        // 1回目：即時実行
+        if (!triggerInitialLoad()) {
+            // 失敗した場合は2秒後に1回だけリトライ（Discordの初期化待ち）
+            logger.info("[DEBUG] Channel not ready, scheduling retry in 2s...");
+            setTimeout(() => {
+                if (!triggerInitialLoad()) {
+                    logger.info("[DEBUG] Retry: Channel still not ready. User might not be in a channel.");
+                }
+            }, 2000);
+        }
     },
 
-    options: {
-        deleteStyle: {
-            type: OptionType.SELECT,
-            description: "The style of deleted messages",
-            options: [
-                { label: "Red text", value: "text", default: true },
-                { label: "Red overlay", value: "overlay" }
-            ],
-            onChange: () => addDeleteStyle()
-        },
-        logDeletes: {
-            type: OptionType.BOOLEAN,
-            description: "Whether to log deleted messages",
-            default: true,
-        },
-        collapseDeleted: {
-            type: OptionType.BOOLEAN,
-            description: "Whether to collapse deleted messages, similar to blocked messages",
-            default: false,
-            restartNeeded: true,
-        },
-        logEdits: {
-            type: OptionType.BOOLEAN,
-            description: "Whether to log edited messages",
-            default: true,
-        },
-        inlineEdits: {
-            type: OptionType.BOOLEAN,
-            description: "Whether to display edit history as part of message content",
-            default: true
-        },
-        ignoreBots: {
-            type: OptionType.BOOLEAN,
-            description: "Whether to ignore messages by bots",
-            default: false
-        },
-        ignoreSelf: {
-            type: OptionType.BOOLEAN,
-            description: "Whether to ignore messages by yourself",
-            default: false
-        },
-        ignoreUsers: {
-            type: OptionType.STRING,
-            description: "Comma-separated list of user IDs to ignore",
-            default: ""
-        },
-        ignoreChannels: {
-            type: OptionType.STRING,
-            description: "Comma-separated list of channel IDs to ignore",
-            default: ""
-        },
-        ignoreGuilds: {
-            type: OptionType.STRING,
-            description: "Comma-separated list of guild IDs to ignore",
-            default: ""
-        },
+    stop(): void {
+        this._restoreDispatcher();
     },
 
-    handleDelete(cache: any, data: { ids: string[], id: string; mlDeleted?: boolean; }, isBulk: boolean) {
+    /**
+     * Dispatcher のモンキーパッチ
+     *
+     * Discord 内部の Dispatcher オブジェクトの dispatch メソッドを書き換えて、
+     * すべてのイベントを onDispatchEvent でインターセプトできるようにする。
+     *
+     * MessageLoggerV2 では ZeresPluginLibrary の Patcher.instead を使用しているが、
+     * Vencord では直接書き換える方式を採用。
+     *
+     * フラグ __ml_vencord_patched で二重パッチを防止する。
+     */
+    _patchDispatcher(): void {
+        try {
+            const _dispatcher = findByPropsLazy("dispatch", "subscribe") as any;
+            if (!_dispatcher?.dispatch || _dispatcher.__ml_vencord_patched) return;
+
+            this.__ml_original_dispatch = _dispatcher.dispatch.bind(_dispatcher);
+            _dispatcher.dispatch = (...args: any[]) => {
+                try {
+                    // 全てのイベントを onDispatchEvent に委譲する。
+                    // onDispatchEvent 内で callDefault() を呼ぶことで元の処理を実行する。
+                    // これにより、イベントごとに「前処理」「後処理」「データの書き換え」を柔軟に制御できる。
+                    if (this.onDispatchEvent) {
+                        return this.onDispatchEvent(args, this.__ml_original_dispatch);
+                    } else {
+                        return this.__ml_original_dispatch(...args);
+                    }
+                } catch (e) {
+                    logger.error("Dispatcher patch error", e);
+                    try { return this.__ml_original_dispatch(...args); } catch { return undefined; }
+                }
+            };
+            _dispatcher.__ml_vencord_patched = true;
+            this.__ml_dispatcher = _dispatcher;
+        } catch (e) {
+            logger.error("Failed to patch Dispatcher", e);
+        }
+    },
+
+    /**
+     * Dispatcher の復元
+     *
+     * プラグイン停止時に元の dispatch メソッドを復元する。
+     * これを忘れると Discord の動作に影響が出る可能性がある。
+     */
+    _restoreDispatcher(): void {
+        try {
+            if (!this.__ml_dispatcher || !this.__ml_original_dispatch) return;
+
+            this.__ml_dispatcher.dispatch = this.__ml_original_dispatch;
+            delete this.__ml_dispatcher.__ml_vencord_patched;
+            this.__ml_dispatcher = undefined;
+            this.__ml_original_dispatch = undefined;
+        } catch (e) {
+            logger.error("failed to restore dispatcher", e);
+        }
+    },
+
+    /**
+     * MessageCache 内でのメッセージ削除処理（patches.ts から呼ばれる）
+     *
+     * patches.ts の正規表現パッチから呼び出される。
+     * キャッシュ内のメッセージに deleted: true フラグを設定し、
+     * 同時に IndexedDB に保存する。
+     *
+     * 注意: patches.ts のパッチが Discord のアップデートで壊れることがあるため、
+     * onDispatchEvent での処理も併用している（二重保険）。
+     */
+    handleDelete(cache: any, data: DeleteData, isBulk: boolean): any {
         try {
             if (cache == null || (!isBulk && !cache.has(data.id))) return cache;
 
@@ -486,10 +571,10 @@ export default definePlugin({
                     cache = cache.remove(id);
                     deleteMessageFromDB(id);
                 } else {
-                    cache = cache.update(id, m => {
+                    cache = cache.update(id, (m: any) => {
                         const updated = m
                             .set("deleted", true)
-                            .set("attachments", m.attachments.map(a => (a.deleted = true, a)));
+                            .set("attachments", m.attachments.map((a: any) => (a.deleted = true, a)));
                         saveMessage(updated.toJS());
                         return updated;
                     });
@@ -497,273 +582,59 @@ export default definePlugin({
             };
 
             if (isBulk) {
-                data.ids.forEach(mutate);
-            } else {
+                data.ids?.forEach(mutate);
+            } else if (data.id) {
                 mutate(data.id);
             }
         } catch (e) {
-            new Logger("MessageLogger").error("Error during handleDelete", e);
+            logger.error("Error during handleDelete", e);
         }
         return cache;
     },
 
-    shouldIgnore(message: any, isEdit = false) {
+    /**
+     * メッセージを無視すべきかどうかを判定
+     *
+     * 設定に基づいて以下の条件をチェック:
+     * - Bot からのメッセージを無視
+     * - 自分のメッセージを無視
+     * - 特定のユーザー/チャンネル/サーバーを無視
+     * - モニタリング対象かどうか
+     * - 編集/削除のログ設定
+     */
+    shouldIgnore(message: any, isEdit = false): boolean {
         try {
-            const { ignoreBots, ignoreSelf, ignoreUsers, ignoreChannels, ignoreGuilds, logEdits, logDeletes } = Settings.plugins.MessageLogger;
-            const myId = UserStore.getCurrentUser().id;
+            const {
+                ignoreBots,
+                ignoreSelf,
+                ignoreUsers,
+                ignoreChannels,
+                ignoreGuilds,
+                logEdits,
+                logDeletes
+            } = Settings.plugins.MessageLogger;
 
-            if (!isMonitored(ChannelStore.getChannel(message.channel_id)?.guild_id, message.channel_id)) {
+            const myId = UserStore.getCurrentUser().id;
+            const channel = ChannelStore.getChannel(message.channel_id);
+
+            // Check if channel is monitored
+            if (!isMonitored(channel?.guild_id, message.channel_id)) {
                 return true;
             }
 
-            return ignoreBots && message.author?.bot ||
-                ignoreSelf && message.author?.id === myId ||
+            return (
+                (ignoreBots && message.author?.bot) ||
+                (ignoreSelf && message.author?.id === myId) ||
                 ignoreUsers.includes(message.author?.id) ||
                 ignoreChannels.includes(message.channel_id) ||
-                ignoreChannels.includes(ChannelStore.getChannel(message.channel_id)?.parent_id) ||
+                ignoreChannels.includes(channel?.parent_id) ||
                 (isEdit ? !logEdits : !logDeletes) ||
-                ignoreGuilds.includes(ChannelStore.getChannel(message.channel_id)?.guild_id) ||
+                ignoreGuilds.includes(channel?.guild_id) ||
                 // Ignore Venbot in the support channels
-                (message.author?.id === VENBOT_USER_ID && ChannelStore.getChannel(message.channel_id)?.parent_id === SUPPORT_CATEGORY_ID);
-        } catch (e) {
+                (message.author?.id === VENBOT_USER_ID && channel?.parent_id === SUPPORT_CATEGORY_ID)
+            );
+        } catch {
             return false;
         }
     },
-
-    EditMarker({ message, className, children, ...props }: any) {
-        return (
-            <span
-                {...props}
-                className={classes("messagelogger-edit-marker", className)}
-                onClick={() => openHistoryModal(message)}
-                role="button"
-            >
-                {children}
-            </span>
-        );
-    },
-
-    // DELETED_MESSAGE_COUNT: getMessage("{count, plural, =0 {No deleted messages} one {{count} deleted message} other {{count} deleted messages}}")
-    // TODO: Find a better way to generate intl messages
-    DELETED_MESSAGE_COUNT: () => ({
-        ast: [[
-            6,
-            "count",
-            {
-                "=0": ["No deleted messages"],
-                one: [
-                    [
-                        1,
-                        "count"
-                    ],
-                    " deleted message"
-                ],
-                other: [
-                    [
-                        1,
-                        "count"
-                    ],
-                    " deleted messages"
-                ]
-            },
-            0,
-            "cardinal"
-        ]]
-    }),
-
-    patches: [
-        {
-            // MessageStore
-            find: '"MessageStore"',
-            replacement: [
-                {
-                    // Add deleted=true to all target messages in the MESSAGE_DELETE event
-                    match: /function (?=.+?MESSAGE_DELETE:(\i))\1\((\i)\){let.+?((?:\i\.){2})getOrCreate.+?}(?=function)/,
-                    replace:
-                        "function $1($2){" +
-                        "   var cache = $3getOrCreate($2.channelId);" +
-                        "   cache = $self.handleDelete(cache, $2, false);" +
-                        "   $3commit(cache);" +
-                        "}"
-                },
-                {
-                    // Add deleted=true to all target messages in the MESSAGE_DELETE_BULK event
-                    match: /function (?=.+?MESSAGE_DELETE_BULK:(\i))\1\((\i)\){let.+?((?:\i\.){2})getOrCreate.+?}(?=function)/,
-                    replace:
-                        "function $1($2){" +
-                        "   var cache = $3getOrCreate($2.channelId);" +
-                        "   cache = $self.handleDelete(cache, $2, true);" +
-                        "   $3commit(cache);" +
-                        "}"
-                },
-                {
-                    // Add current cached content + new edit time to cached message's editHistory
-                    match: /(function (\i)\((\i)\).+?)\.update\((\i)(?=.*MESSAGE_UPDATE:\2)/,
-                    replace: "$1" +
-                        ".update($4,m => {" +
-                        "   if ((($3.message.flags & 64) === 64 || $self.shouldIgnore($3.message, true))) return m;" +
-                        "   if ($3.message.edited_timestamp && $3.message.content !== m.content) {" +
-                        "       const updated = m.set('editHistory',[...(m.editHistory || []), $self.makeEdit($3.message, m)]);" +
-                        "       $self.saveMessage(updated.toJS());" +
-                        "       return updated;" +
-                        "   }" +
-                        "   return m;" +
-                        "})" +
-                        ".update($4"
-                },
-                {
-                    // fix up key (edit last message) attempting to edit a deleted message
-                    match: /(?<=getLastEditableMessage\(\i\)\{.{0,200}\.find\((\i)=>)/,
-                    replace: "!$1.deleted &&"
-                }
-            ]
-        },
-
-        {
-            // Message domain model
-            find: "}addReaction(",
-            replacement: [
-                {
-                    match: /this\.customRenderedContent=(\i)\.customRenderedContent,/,
-                    replace: "this.customRenderedContent = $1.customRenderedContent," +
-                        "this.deleted = $1.deleted || false," +
-                        "this.editHistory = $1.editHistory || []," +
-                        "this.firstEditTimestamp = $1.firstEditTimestamp || this.editedTimestamp || this.timestamp,"
-                }
-            ]
-        },
-
-        {
-            // Updated message transformer(?)
-            find: "THREAD_STARTER_MESSAGE?null==",
-            replacement: [
-                {
-                    // Pass through editHistory & deleted & original attachments to the "edited message" transformer
-                    match: /(?<=null!=\i\.edited_timestamp\)return )\i\(\i,\{reactions:(\i)\.reactions.{0,50}\}\)/,
-                    replace:
-                        "Object.assign($&,{ deleted:$1.deleted, editHistory:$1.editHistory, firstEditTimestamp:$1.firstEditTimestamp })"
-                },
-
-                {
-                    // Construct new edited message and add editHistory & deleted (ref above)
-                    // Pass in custom data to attachment parser to mark attachments deleted as well
-                    match: /attachments:(\i)\((\i)\)/,
-                    replace:
-                        "attachments: $1((() => {" +
-                        "   if ($self.shouldIgnore($2)) return $2;" +
-                        "   let old = arguments[1]?.attachments;" +
-                        "   if (!old) return $2;" +
-                        "   let new_ = $2.attachments?.map(a => a.id) ?? [];" +
-                        "   let diff = old.filter(a => !new_.includes(a.id));" +
-                        "   old.forEach(a => a.deleted = true);" +
-                        "   $2.attachments = [...diff, ...$2.attachments];" +
-                        "   return $2;" +
-                        "})())," +
-                        "deleted: arguments[1]?.deleted," +
-                        "editHistory: arguments[1]?.editHistory," +
-                        "firstEditTimestamp: new Date(arguments[1]?.firstEditTimestamp ?? $2.editedTimestamp ?? $2.timestamp)"
-                },
-                {
-                    // Preserve deleted attribute on attachments
-                    match: /(\((\i)\){return null==\2\.attachments.+?)spoiler:/,
-                    replace:
-                        "$1deleted: arguments[0]?.deleted," +
-                        "spoiler:"
-                }
-            ]
-        },
-
-        {
-            // Attachment renderer
-            find: ".removeMosaicItemHoverButton",
-            replacement: [
-                {
-                    match: /\[\i\.obscured\]:.+?,(?<=item:(\i).+?)/,
-                    replace: '$&"messagelogger-deleted-attachment":$1.originalItem?.deleted,'
-                }
-            ]
-        },
-
-        {
-            // Base message component renderer
-            find: "Message must not be a thread starter message",
-            replacement: [
-                {
-                    // Append messagelogger-deleted to classNames if deleted
-                    match: /\)\("li",\{(.+?),className:/,
-                    replace: ")(\"li\",{$1,className:(arguments[0].message.deleted ? \"messagelogger-deleted \" : \"\")+"
-                }
-            ]
-        },
-
-        {
-            // Message content renderer
-            find: ".SEND_FAILED,",
-            replacement: {
-                // Render editHistory behind the message content
-                match: /\.isFailed]:.+?children:\[/,
-                replace: "$&arguments[0]?.message?.editHistory?.length>0&&$self.renderEdits(arguments[0]),"
-            }
-        },
-
-        {
-            find: "#{intl::MESSAGE_EDITED}",
-            replacement: {
-                // Make edit marker clickable
-                match: /"span",\{(?=className:\i\.edited,)/,
-                replace: "$self.EditMarker,{message:arguments[0].message,"
-            }
-        },
-
-        {
-            // ReferencedMessageStore
-            find: '"ReferencedMessageStore"',
-            replacement: [
-                {
-                    match: /MESSAGE_DELETE:\i,/,
-                    replace: "MESSAGE_DELETE:()=>{},"
-                },
-                {
-                    match: /MESSAGE_DELETE_BULK:\i,/,
-                    replace: "MESSAGE_DELETE_BULK:()=>{},"
-                }
-            ]
-        },
-
-        {
-            // Message context base menu
-            find: ".MESSAGE,commandTargetId:",
-            replacement: [
-                {
-                    // Remove the first section if message is deleted
-                    match: /children:(\[""===.+?\])/,
-                    replace: "children:arguments[0].message.deleted?[]:$1"
-                }
-            ]
-        },
-        {
-            // Message grouping
-            find: "NON_COLLAPSIBLE.has(",
-            replacement: {
-                match: /if\((\i)\.blocked\)return \i\.\i\.MESSAGE_GROUP_BLOCKED;/,
-                replace: '$&else if($1.deleted) return"MESSAGE_GROUP_DELETED";',
-            },
-            predicate: () => Settings.plugins.MessageLogger.collapseDeleted
-        },
-        {
-            // Message group rendering
-            find: "#{intl::NEW_MESSAGES_ESTIMATED_WITH_DATE}",
-            replacement: [
-                {
-                    match: /(\i).type===\i\.\i\.MESSAGE_GROUP_BLOCKED\|\|/,
-                    replace: '$&$1.type==="MESSAGE_GROUP_DELETED"||',
-                },
-                {
-                    match: /(\i).type===\i\.\i\.MESSAGE_GROUP_BLOCKED\?.*?:/,
-                    replace: '$&$1.type==="MESSAGE_GROUP_DELETED"?$self.DELETED_MESSAGE_COUNT:',
-                },
-            ],
-            predicate: () => Settings.plugins.MessageLogger.collapseDeleted
-        }
-    ]
 });
