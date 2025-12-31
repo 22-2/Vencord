@@ -137,28 +137,11 @@ export default definePlugin({
      * 現在は onDispatchEvent での処理が主で、この関数は補助的な役割。
      */
     async onLoadMessages({ channelId }: { channelId: string; }): Promise<void> {
-        logger.info("[DEBUG] onLoadMessages called for channel:", channelId);
-
         const savedMessages = await getMessagesForChannel(channelId);
-        logger.info("[DEBUG] savedMessages from DB:", savedMessages.length, "messages");
-        if (!savedMessages.length) {
-            logger.info("[DEBUG] No saved messages, returning early");
-            return;
-        }
-
-        // Log first saved message for debugging
-        if (savedMessages[0]) {
-            logger.info("[DEBUG] First saved message:", {
-                id: savedMessages[0].id,
-                deleted: savedMessages[0].deleted,
-                content: savedMessages[0].content?.substring(0, 50)
-            });
-        }
+        if (!savedMessages.length) return;
 
         let cache = MessageCache.getOrCreate(channelId);
         const currentMessages = cache.toArray();
-        logger.info("[DEBUG] currentMessages in cache:", currentMessages.length);
-
         const messageMap = new Map<string, any>();
 
         for (const msg of currentMessages) {
@@ -174,19 +157,6 @@ export default definePlugin({
             return moment(a.timestamp).valueOf() - moment(b.timestamp).valueOf();
         });
 
-        logger.info("[DEBUG] After merge, total messages:", sortedMessages.length);
-
-        // 削除済みメッセージが実際に deleted: true を持っているか数件チェック
-        const deletedInMerge = sortedMessages.filter(m => m.deleted);
-        logger.info("[DEBUG] Messages with deleted:true in merge set:", deletedInMerge.length);
-        if (deletedInMerge.length > 0) {
-            logger.info("[DEBUG] Sample deleted message:", {
-                id: deletedInMerge[0].id,
-                deleted: deletedInMerge[0].deleted,
-                content: deletedInMerge[0].content?.substring(0, 30)
-            });
-        }
-
         for (const msg of currentMessages) {
             cache = cache.remove(msg.id);
         }
@@ -195,24 +165,8 @@ export default definePlugin({
             cache = cache.receiveMessage(msg);
         }
 
-        // Check if 'deleted' property persists in the Message instances in cache
-        // This verifies if the Message domain model patch is working or needed
-        const cachedMessages = cache.toArray();
-        const deletedInCache = cachedMessages.filter((m: any) => m.deleted);
-        logger.info("[DEBUG] Cache check after receiveMessage:", {
-            total: cachedMessages.length,
-            withDeletedFlag: deletedInCache.length
-        });
-
-        if (deletedInCache.length > 0) {
-            logger.info("[DEBUG] Sample cached instance:", deletedInCache[0]);
-        } else if (sortedMessages.length > 0 && sortedMessages.some(m => m.deleted)) {
-            logger.error("[DEBUG] CRITICAL: 'deleted' flag lost during receiveMessage! Message model patch might be broken.");
-        }
-
         MessageCache.commit(cache);
         MessageStore.emitChange();
-        logger.info("[DEBUG] onLoadMessages completed, emitted change");
     },
 
     /**
@@ -332,25 +286,11 @@ export default definePlugin({
             const channelId = dispatch.channelId ?? dispatch.channel_id ??
                 dispatch.message?.channel_id ?? dispatch.payload?.channelId;
 
-            logger.info("[DEBUG] _handleMessageDelete called:", { id, channelId });
-
-            if (!id || !channelId) {
-                logger.info("[DEBUG] _handleMessageDelete: missing id or channelId, skipping");
-                return;
-            }
+            if (!id || !channelId) return;
 
             const msg = MessageStore.getMessage(channelId, id) as any;
-            logger.info("[DEBUG] _handleMessageDelete: MessageStore.getMessage returned:", msg ? "found" : "null");
-
-            if (!msg) {
-                logger.info("[DEBUG] _handleMessageDelete: message not found in MessageStore");
-                return;
-            }
-
-            if (this.shouldIgnore?.(msg)) {
-                logger.info("[DEBUG] _handleMessageDelete: message ignored by shouldIgnore");
-                return;
-            }
+            if (!msg) return;
+            if (this.shouldIgnore?.(msg)) return;
 
             const plain = typeof msg.toJS === "function" ? msg.toJS() : { ...msg };
             const toSave: MLMessage = {
@@ -359,9 +299,7 @@ export default definePlugin({
                 attachments: (plain.attachments || []).map((a: any) => ({ ...a, deleted: true }))
             };
 
-            logger.info("[DEBUG] _handleMessageDelete: saving message with deleted:", toSave.deleted, "id:", toSave.id);
             saveMessage(toSave);
-            logger.info("[DEBUG] _handleMessageDelete: saveMessage called successfully");
         } catch (e) {
             logger.error("MESSAGE_DELETE handling failed", e);
         }
@@ -450,18 +388,14 @@ export default definePlugin({
     },
 
     start(): void {
-        logger.info("[DEBUG] MessageLogger start() called");
         addDeleteStyle();
         loadMonitoringSettings();
-
-        // Patch dispatcher to intercept low-level dispatches
         this._patchDispatcher();
 
+        // 起動時に現在のチャンネルのメッセージを復元
         const triggerInitialLoad = () => {
             const currentChannelId = SelectedChannelStore.getChannelId();
-            logger.info("[DEBUG] Initial load check, channelId:", currentChannelId);
             if (currentChannelId) {
-                logger.info("[DEBUG] Triggering initial onLoadMessages");
                 this.onLoadMessages({ channelId: currentChannelId }).catch(e => {
                     logger.error("Initial onLoadMessages failed", e);
                 });
@@ -470,15 +404,9 @@ export default definePlugin({
             return false;
         };
 
-        // 1回目：即時実行
         if (!triggerInitialLoad()) {
-            // 失敗した場合は2秒後に1回だけリトライ（Discordの初期化待ち）
-            logger.info("[DEBUG] Channel not ready, scheduling retry in 2s...");
-            setTimeout(() => {
-                if (!triggerInitialLoad()) {
-                    logger.info("[DEBUG] Retry: Channel still not ready. User might not be in a channel.");
-                }
-            }, 2000);
+            // Discordの初期化待ち
+            setTimeout(() => triggerInitialLoad(), 2000);
         }
     },
 

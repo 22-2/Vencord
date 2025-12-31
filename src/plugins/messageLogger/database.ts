@@ -107,3 +107,77 @@ export async function getChannelIdsWithMessages(): Promise<string[]> {
     return [];
   }
 }
+
+/**
+ * Gets the total count of messages matching the filter criteria
+ */
+export async function getMessageCount(filter: {
+  channelId?: string;
+  deleted?: boolean;
+  hasEditHistory?: boolean;
+}): Promise<number> {
+  try {
+    const db = await dbPromise;
+    let messages: MLMessage[];
+
+    if (filter.channelId) {
+      messages = await db.getAllFromIndex("messages", "by-channel", filter.channelId);
+    } else {
+      messages = await db.getAll("messages");
+    }
+
+    return messages.filter(msg => {
+      if (filter.deleted !== undefined && msg.deleted !== filter.deleted) return false;
+      if (filter.hasEditHistory && (!msg.editHistory || msg.editHistory.length === 0)) return false;
+      return true;
+    }).length;
+  } catch (e) {
+    logger.error("Failed to get message count", e);
+    return 0;
+  }
+}
+
+/**
+ * Gets messages with pagination support
+ */
+export async function getMessagesPaginated(
+  page: number,
+  pageSize: number,
+  filter: {
+    channelId?: string;
+    deleted?: boolean;
+    hasEditHistory?: boolean;
+  }
+): Promise<MLMessage[]> {
+  try {
+    const db = await dbPromise;
+    let messages: MLMessage[];
+
+    if (filter.channelId) {
+      messages = await db.getAllFromIndex("messages", "by-channel", filter.channelId);
+    } else {
+      messages = await db.getAll("messages");
+    }
+
+    // Apply filters
+    let filtered = messages.filter(msg => {
+      if (filter.deleted !== undefined && msg.deleted !== filter.deleted) return false;
+      if (filter.hasEditHistory && (!msg.editHistory || msg.editHistory.length === 0)) return false;
+      return true;
+    });
+
+    // Sort by timestamp (newest first)
+    filtered.sort((a, b) => {
+      const timeA = new Date(a.timestamp as any).getTime() || 0;
+      const timeB = new Date(b.timestamp as any).getTime() || 0;
+      return timeB - timeA;
+    });
+
+    // Apply pagination
+    const start = page * pageSize;
+    return filtered.slice(start, start + pageSize);
+  } catch (e) {
+    logger.error("Failed to get paginated messages", e);
+    return [];
+  }
+}

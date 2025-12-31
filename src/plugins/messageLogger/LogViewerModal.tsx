@@ -22,28 +22,33 @@ import { findByPropsLazy } from "@webpack";
 import {
   Button,
   ChannelStore,
+  ContextMenuApi,
   Forms,
   GuildStore,
+  Menu,
   moment,
   ScrollerThin,
   Select,
   TabBar,
   Text,
-  Timestamp,
+  useCallback,
   useEffect,
   useMemo,
   UserStore,
   useState
 } from "@webpack/common";
 
-import { getAllMessages, getChannelIdsWithMessages } from "./database";
+import { getChannelIdsWithMessages, getMessageCount, getMessagesPaginated } from "./database";
 import { openHistoryModal } from "./HistoryModal";
 import { MLMessage } from "./types";
 
 const CodeContainerClasses = findByPropsLazy("markup", "codeContainer");
 const MiscClasses = findByPropsLazy("messageContent", "markupRtl");
+const NavigationUtils = findByPropsLazy("transitionTo");
 
 const cl = classNameFactory("vc-ml-viewer-");
+
+const PAGE_SIZE = 20;
 
 export function openLogViewerModal() {
   openModal(props => (
@@ -64,13 +69,15 @@ function LogViewerModal({ modalProps }: { modalProps: ModalProps; }) {
   const [messages, setMessages] = useState<MLMessage[]>([]);
   const [channelOptions, setChannelOptions] = useState<ChannelOption[]>([]);
   const [loading, setLoading] = useState(true);
+  const [page, setPage] = useState(0);
+  const [totalCount, setTotalCount] = useState(0);
 
-  // Load channel list and messages on mount
+  const totalPages = useMemo(() => Math.ceil(totalCount / PAGE_SIZE), [totalCount]);
+
+  // Load channel list on mount
   useEffect(() => {
     (async () => {
-      setLoading(true);
       try {
-        // Get all channel IDs that have messages
         const channelIds = await getChannelIdsWithMessages();
         const options: ChannelOption[] = [{ value: "all", label: "All Channels" }];
 
@@ -88,42 +95,47 @@ function LogViewerModal({ modalProps }: { modalProps: ModalProps; }) {
         }
 
         setChannelOptions(options);
+      } catch (e) {
+        console.error("[MessageLogger] Failed to load channels:", e);
+      }
+    })();
+  }, []);
 
-        // Load all messages
-        const allMessages = await getAllMessages();
-        setMessages(allMessages);
+  // Load messages when filter or page changes
+  useEffect(() => {
+    (async () => {
+      setLoading(true);
+      try {
+        const filter = {
+          channelId: selectedChannel === "all" ? undefined : selectedChannel,
+          deleted: currentTab === "deleted" ? true : undefined,
+          hasEditHistory: currentTab === "edited" ? true : undefined,
+        };
+
+        const count = await getMessageCount(filter);
+        setTotalCount(count);
+
+        const msgs = await getMessagesPaginated(page, PAGE_SIZE, filter);
+        setMessages(msgs);
       } catch (e) {
         console.error("[MessageLogger] Failed to load messages:", e);
       }
       setLoading(false);
     })();
+  }, [currentTab, selectedChannel, page]);
+
+  // Reset page when filter changes
+  useEffect(() => {
+    setPage(0);
+  }, [currentTab, selectedChannel]);
+
+  const handlePrevPage = useCallback(() => {
+    setPage(p => Math.max(0, p - 1));
   }, []);
 
-  // Filter messages based on current tab and selected channel
-  const filteredMessages = useMemo(() => {
-    let filtered = messages;
-
-    // Filter by channel
-    if (selectedChannel !== "all") {
-      filtered = filtered.filter(m => m.channel_id === selectedChannel);
-    }
-
-    // Filter by type (deleted or edited)
-    if (currentTab === "deleted") {
-      filtered = filtered.filter(m => m.deleted);
-    } else {
-      filtered = filtered.filter(m => m.editHistory && m.editHistory.length > 0);
-    }
-
-    // Sort by timestamp (newest first)
-    filtered = filtered.sort((a, b) => {
-      const timeA = moment(a.timestamp).valueOf();
-      const timeB = moment(b.timestamp).valueOf();
-      return timeB - timeA;
-    });
-
-    return filtered;
-  }, [messages, selectedChannel, currentTab]);
+  const handleNextPage = useCallback(() => {
+    setPage(p => Math.min(totalPages - 1, p + 1));
+  }, [totalPages]);
 
   return (
     <ModalRoot {...modalProps} size={ModalSize.LARGE}>
@@ -168,33 +180,145 @@ function LogViewerModal({ modalProps }: { modalProps: ModalProps; }) {
           <div style={{ textAlign: "center", padding: "20px" }}>
             <Text variant="text-md/normal">Loading messages...</Text>
           </div>
-        ) : filteredMessages.length === 0 ? (
+        ) : messages.length === 0 ? (
           <div style={{ textAlign: "center", padding: "20px" }}>
             <Text variant="text-md/normal">No messages found.</Text>
           </div>
         ) : (
-          <ScrollerThin style={{ maxHeight: "400px" }}>
-            {filteredMessages.map(msg => (
+          <ScrollerThin style={{ maxHeight: "350px" }}>
+            {messages.map(msg => (
               <MessageCard
                 key={msg.id}
                 message={msg}
                 showEditHistory={currentTab === "edited"}
+                onClose={modalProps.onClose}
               />
             ))}
           </ScrollerThin>
+        )}
+
+        {/* Pagination */}
+        {totalPages > 1 && (
+          <div style={{
+            display: "flex",
+            justifyContent: "center",
+            alignItems: "center",
+            gap: "16px",
+            marginTop: "16px"
+          }}>
+            <Button
+              size={Button.Sizes.SMALL}
+              disabled={page === 0}
+              onClick={handlePrevPage}
+            >
+              ← Previous
+            </Button>
+            <Text variant="text-md/normal">
+              Page {page + 1} of {totalPages}
+            </Text>
+            <Button
+              size={Button.Sizes.SMALL}
+              disabled={page >= totalPages - 1}
+              onClick={handleNextPage}
+            >
+              Next →
+            </Button>
+          </div>
         )}
       </ModalContent>
 
       <ModalFooter>
         <Text variant="text-sm/normal" style={{ color: "var(--text-muted)" }}>
-          Total: {filteredMessages.length} messages
+          Total: {totalCount} messages | Showing {messages.length} on this page
         </Text>
       </ModalFooter>
     </ModalRoot>
   );
 }
 
-function MessageCard({ message, showEditHistory }: { message: MLMessage; showEditHistory: boolean; }) {
+function MessageContextMenu({
+  message,
+  showEditHistory,
+  onClose
+}: {
+  message: MLMessage;
+  showEditHistory: boolean;
+  onClose: () => void;
+}) {
+  const channel = ChannelStore.getChannel(message.channel_id);
+
+  const handleJumpToMessage = () => {
+    ContextMenuApi.closeContextMenu();
+    onClose();
+
+    const guildId = channel?.guild_id || "@me";
+    const url = `/channels/${guildId}/${message.channel_id}/${message.id}`;
+
+    if (NavigationUtils?.transitionTo) {
+      NavigationUtils.transitionTo(url);
+    }
+  };
+
+  const handleCopyMessageId = () => {
+    navigator.clipboard.writeText(message.id);
+    ContextMenuApi.closeContextMenu();
+  };
+
+  const handleCopyContent = () => {
+    navigator.clipboard.writeText(message.content || "");
+    ContextMenuApi.closeContextMenu();
+  };
+
+  const handleViewHistory = () => {
+    ContextMenuApi.closeContextMenu();
+    openHistoryModal(message);
+  };
+
+  return (
+    <Menu.Menu
+      navId="ml-message-context"
+      onClose={ContextMenuApi.closeContextMenu}
+      aria-label="Message Logger Menu"
+    >
+      <Menu.MenuItem
+        id="ml-jump"
+        label="Jump to Message"
+        action={handleJumpToMessage}
+      />
+      <Menu.MenuSeparator />
+      <Menu.MenuItem
+        id="ml-copy-id"
+        label="Copy Message ID"
+        action={handleCopyMessageId}
+      />
+      <Menu.MenuItem
+        id="ml-copy-content"
+        label="Copy Content"
+        action={handleCopyContent}
+      />
+      {showEditHistory && message.editHistory && message.editHistory.length > 0 && (
+        <>
+          <Menu.MenuSeparator />
+          <Menu.MenuItem
+            id="ml-view-history"
+            label={`View Edit History (${message.editHistory.length})`}
+            action={handleViewHistory}
+          />
+        </>
+      )}
+    </Menu.Menu>
+  );
+}
+
+function MessageCard({
+  message,
+  showEditHistory,
+  onClose
+}: {
+  message: MLMessage;
+  showEditHistory: boolean;
+  onClose: () => void;
+}) {
   const author = UserStore.getUser(message.author?.id);
   const channel = ChannelStore.getChannel(message.channel_id);
   const guild = channel?.guild_id ? GuildStore.getGuild(channel.guild_id) : null;
@@ -202,6 +326,18 @@ function MessageCard({ message, showEditHistory }: { message: MLMessage; showEdi
   const authorName = author?.username || message.author?.username || "Unknown User";
   const channelName = channel?.name || "Unknown Channel";
   const guildName = guild?.name || "";
+
+  const handleContextMenu = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    ContextMenuApi.openContextMenu(e, () => (
+      <MessageContextMenu
+        message={message}
+        showEditHistory={showEditHistory}
+        onClose={onClose}
+      />
+    ));
+  }, [message, showEditHistory, onClose]);
 
   return (
     <div
@@ -215,8 +351,10 @@ function MessageCard({ message, showEditHistory }: { message: MLMessage; showEdi
         borderRadius: "8px",
         border: message.deleted
           ? "1px solid rgba(240, 71, 71, 0.3)"
-          : "1px solid rgba(250, 168, 26, 0.3)"
+          : "1px solid rgba(250, 168, 26, 0.3)",
+        cursor: "context-menu"
       }}
+      onContextMenu={handleContextMenu}
     >
       {/* Header */}
       <div style={{ display: "flex", justifyContent: "space-between", marginBottom: "8px" }}>
@@ -260,15 +398,12 @@ function MessageCard({ message, showEditHistory }: { message: MLMessage; showEdi
         </div>
       )}
 
-      {/* Edit History Button */}
+      {/* Edit History indicator */}
       {showEditHistory && message.editHistory && message.editHistory.length > 0 && (
         <div style={{ marginTop: "8px" }}>
-          <Button
-            size={Button.Sizes.SMALL}
-            onClick={() => openHistoryModal(message)}
-          >
-            View Edit History ({message.editHistory.length} edits)
-          </Button>
+          <Text variant="text-xs/normal" style={{ color: "var(--text-muted)" }}>
+            📝 {message.editHistory.length} edit(s) - Right click for options
+          </Text>
         </div>
       )}
     </div>
