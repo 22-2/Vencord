@@ -56,6 +56,8 @@ function getMessage(url: string, directives: string[], callerName: string) {
                     return "CSS & Themes";
                 case "font-src":
                     return "Fonts";
+                case "media-src":
+                    return "Media (Audio/Video)";
                 default:
                     throw new Error(`Illegal CSP directive: ${type}`);
             }
