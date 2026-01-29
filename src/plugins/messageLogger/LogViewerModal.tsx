@@ -38,15 +38,16 @@ import {
   useState
 } from "@webpack/common";
 
+
 import { getChannelIdsWithMessages, getMessageCount, getMessagesPaginated } from "./database";
 import { openHistoryModal } from "./HistoryModal";
 import { MLMessage } from "./types";
 
-const CodeContainerClasses = findByPropsLazy("markup", "codeContainer");
-const MiscClasses = findByPropsLazy("messageContent", "markupRtl");
+// Optional classes - will gracefully degrade if not found
 const NavigationUtils = findByPropsLazy("transitionTo");
 
 const cl = classNameFactory("vc-ml-viewer-");
+
 
 const PAGE_SIZE = 20;
 
@@ -378,8 +379,14 @@ function MessageCard({
 
       {/* Content */}
       <div
-        className={classes(CodeContainerClasses.markup, MiscClasses.messageContent)}
-        style={{ wordBreak: "break-word" }}
+        style={{
+          wordBreak: "break-word",
+          padding: "8px 0",
+          fontSize: "14px",
+          lineHeight: "1.375rem",
+          whiteSpace: "pre-wrap",
+          color: "var(--text-default)"
+        }}
       >
         {message.content || <em style={{ color: "var(--text-muted)" }}>No text content</em>}
       </div>
