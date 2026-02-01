@@ -33,6 +33,13 @@ export function makeLazy<T>(factory: () => T, attempts = 5): () => T {
 // will always return the function default for them.
 const unconfigurable = ["arguments", "caller", "prototype"];
 
+function reflectGet(target: any, p: PropertyKey, receiver: any) {
+    if ((typeof target === "object" && target !== null) || typeof target === "function") {
+        return Reflect.get(target, p, receiver);
+    }
+    return undefined;
+}
+
 const handler: ProxyHandler<any> = {};
 
 export const SYM_LAZY_GET = Symbol.for("vencord.lazy.get");
@@ -115,14 +122,15 @@ export function proxyLazy<T>(factory: () => T, attempts = 5, isChild = false): T
             // `const { meow } = findByPropsLazy("meow");`
             if (!isChild && isSameTick)
                 return proxyLazy(
-                    () => Reflect.get(target[SYM_LAZY_GET](), p, receiver),
+                    () => reflectGet(target[SYM_LAZY_GET](), p, receiver),
                     attempts,
                     true
                 );
             const lazyTarget = target[SYM_LAZY_GET]();
-            if (typeof lazyTarget === "object" || typeof lazyTarget === "function") {
-                return Reflect.get(lazyTarget, p, receiver);
-            }
+            const result = reflectGet(lazyTarget, p, receiver);
+            if (result !== undefined) return result;
+            if (lazyTarget === undefined || lazyTarget === null) return undefined;
+            if (typeof lazyTarget === "object" || typeof lazyTarget === "function") return result; // result is undefined here
             throw new Error("proxyLazy called on a primitive value");
         }
     }) as any;

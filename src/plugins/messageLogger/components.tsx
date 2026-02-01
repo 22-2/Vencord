@@ -21,14 +21,15 @@ import ErrorBoundary from "@components/ErrorBoundary";
 import { getIntlMessage } from "@utils/discord";
 import { classes } from "@utils/misc";
 import { Message } from "@vencord/discord-types";
-import { findByPropsLazy } from "@webpack";
+import { proxyLazy } from "@utils/lazy";
+import { find, filters } from "@webpack";
 import { MessageStore, Timestamp, useStateFromStores } from "@webpack/common";
 
 import { openHistoryModal } from "./HistoryModal";
 import { MLMessage } from "./types";
 import { parseEditContent } from "./utils";
 
-const styles = findByPropsLazy("edited", "communicationDisabled", "isSystemMessage");
+const styles = proxyLazy(() => find(filters.byProps("edited", "communicationDisabled", "isSystemMessage"), { isIndirect: true }));
 
 /**
  * Renders the edit history for a message inline
@@ -43,6 +44,7 @@ export const renderEdits = ErrorBoundary.wrap(
     );
 
     if (!Settings.plugins.MessageLogger.inlineEdits) return null;
+    if (!message) return null;
 
     return (
       <>
