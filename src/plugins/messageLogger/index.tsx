@@ -39,7 +39,7 @@ import { options } from "./options";
 import { patches } from "./patches";
 import { addDeleteStyle } from "./styles";
 import { MLMessage } from "./types";
-import { makeEdit } from "./utils";
+import { makeEdit, parseEditContent } from "./utils";
 
 // Re-export for external use
 export { parseEditContent } from "./utils";
@@ -63,7 +63,6 @@ const logger = new Logger("MessageLogger");
  *
  * 2. **ジャンプ機能の維持**:
  *    - LOAD_MESSAGES_AROUND_SUCCESS で dispatch.messages 配列を直接書き換える
- *    - 処理後は必ず callDefault() を呼んで Discord に加工済みデータを渡す
  *    - これを忘れると「ジャンプしてもスケルトンのまま」になる
  *
  * 3. **スクロール位置の維持**:
@@ -217,4 +216,7 @@ export default definePlugin({
             return false;
         }
     },
+
+    // keep previously imported patches (from ./patches) — if upstream added inline patches
+    // they should be merged in that module; here we rely on the imported `patches`.
 });
