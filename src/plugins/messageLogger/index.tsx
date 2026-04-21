@@ -23,7 +23,7 @@ import { Settings } from "@api/Settings";
 import { Devs, SUPPORT_CATEGORY_ID, VENBOT_USER_ID } from "@utils/constants";
 import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
-import { ChannelStore, SelectedChannelStore, UserStore } from "@webpack/common";
+import { ChannelStore, UserStore } from "@webpack/common";
 
 import { EditMarker, getDeletedMessageCountFormat, renderEdits } from "./components";
 import {
@@ -38,7 +38,6 @@ import { isMonitored, loadMonitoringSettings } from "./monitoring";
 import { options } from "./options";
 import { patches } from "./patches";
 import { addDeleteStyle } from "./styles";
-import { MLMessage } from "./types";
 import { makeEdit, parseEditContent } from "./utils";
 
 // Re-export for external use
@@ -79,6 +78,7 @@ const logger = new Logger("MessageLogger");
 export default definePlugin({
     name: "MessageLogger",
     description: "Temporarily logs deleted and edited messages.",
+    tags: ["Chat", "Utility"],
     authors: [Devs.rushii, Devs.Ven, Devs.AutumnVN, Devs.Nickyux, Devs.Kyuuhachi],
     dependencies: ["MessageUpdaterAPI"],
 
@@ -217,6 +217,4 @@ export default definePlugin({
         }
     },
 
-    // keep previously imported patches (from ./patches) — if upstream added inline patches
-    // they should be merged in that module; here we rely on the imported `patches`.
 });
