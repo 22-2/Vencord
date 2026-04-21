@@ -126,8 +126,9 @@ export const patches = [
     replacement: [
       {
         match: /\.SPOILER,(?=\[\i\.\i\]:)/,
+        // Keep the original matched prefix via $& so we do not depend on exact token formatting.
         replace:
-          '.SPOILER,"messagelogger-deleted-attachment":arguments[0]?.item?.originalItem?.deleted,',
+          '$&"messagelogger-deleted-attachment":arguments[0]?.item?.originalItem?.deleted,',
       },
     ],
   },
@@ -209,9 +210,10 @@ export const patches = [
         replace: '$&$1.type==="MESSAGE_GROUP_DELETED"||',
       },
       {
-        match: /(\i).type===\i\.\i\.MESSAGE_GROUP_BLOCKED\?.*?:/,
+        // Preserve upstream assignment target capture so deleted-group label injection stays valid.
+        match: /(\i).type===\i\.\i\.MESSAGE_GROUP_BLOCKED\?(\i)=.*?:/,
         replace:
-          '$&$1.type==="MESSAGE_GROUP_DELETED"?$self.DELETED_MESSAGE_COUNT:',
+          '$&$1.type==="MESSAGE_GROUP_DELETED"?$2=$self.DELETED_MESSAGE_COUNT:',
       },
     ],
     predicate: () => Settings.plugins.MessageLogger.collapseDeleted,
