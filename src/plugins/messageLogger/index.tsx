@@ -216,5 +216,4 @@ export default definePlugin({
             return false;
         }
     },
-
 });
