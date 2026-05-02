@@ -19,9 +19,21 @@
 import { Logger } from "@utils/Logger";
 import { openDB } from "idb";
 
-import { MyMessageLoggerDB, MyMLMessage } from "./types";
+import { MyMessageLoggerDB, MyMLMessage, TimestampLike } from "./types";
 
 const logger = new Logger("MyMessageLogger");
+
+function toSortableTimestamp(timestamp: TimestampLike | null | undefined): number {
+    if (timestamp == null) return 0;
+    if (timestamp instanceof Date) {
+        return timestamp.getTime();
+    }
+    if (typeof timestamp === "object" && typeof timestamp.valueOf === "function") {
+        return timestamp.valueOf();
+    }
+
+    return new Date(timestamp).getTime() || 0;
+}
 
 /**
  * Database promise for IndexedDB operations.
@@ -191,8 +203,8 @@ export async function getMessagesPaginated(
 
         // Sort by timestamp (newest first)
         filtered.sort((a, b) => {
-            const timeA = new Date(a.timestamp as any).getTime() || 0;
-            const timeB = new Date(b.timestamp as any).getTime() || 0;
+            const timeA = toSortableTimestamp(a.timestamp);
+            const timeB = toSortableTimestamp(b.timestamp);
             return timeB - timeA;
         });
 

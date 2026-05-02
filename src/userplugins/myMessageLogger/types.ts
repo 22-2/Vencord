@@ -19,17 +19,24 @@
 import { Message } from "@vencord/discord-types";
 import { DBSchema } from "idb";
 
+export type TimestampLike = Date | string | number | { valueOf(): number };
+
 export interface MyMLEditHistoryEntry {
-    timestamp: Date | string | number;
+    timestamp: TimestampLike;
     content: string;
 }
 
 export interface MyMLMessage extends Message {
     deleted?: boolean;
     editHistory?: MyMLEditHistoryEntry[];
-    firstEditTimestamp?: Date | string | number;
-    edited_timestamp?: Date | string | number | null;
+    firstEditTimestamp?: TimestampLike;
+    edited_timestamp?: TimestampLike | null;
     delete_data?: { hidden?: boolean };
+}
+
+export interface LegacyStoredMessage {
+    id?: string;
+    message?: MyMLMessage;
 }
 
 export interface MyMessageLoggerDB extends DBSchema {

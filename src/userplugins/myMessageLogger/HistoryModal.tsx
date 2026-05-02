@@ -14,13 +14,14 @@ import { findCssClassesLazy } from "@webpack";
 import { TabBar, Text, Timestamp, useState } from "@webpack/common";
 
 import { parseEditContent } from ".";
+import { MyMLMessage } from "./types";
 
 const CodeContainerClasses = findCssClassesLazy("markup", "codeContainer");
 const MiscClasses = findCssClassesLazy("messageContent", "markupRtl");
 
 const cl = classNameFactory("vc-ml-modal-");
 
-export function openHistoryModal(message: any) {
+export function openHistoryModal(message: MyMLMessage) {
     openModal(props =>
         <ErrorBoundary>
             <HistoryModal
@@ -31,10 +32,13 @@ export function openHistoryModal(message: any) {
     );
 }
 
-export function HistoryModal({ modalProps, message }: { modalProps: ModalProps; message: any; }) {
-    const [currentTab, setCurrentTab] = useState(message.editHistory.length);
-    const timestamps = [message.firstEditTimestamp, ...message.editHistory.map(m => m.timestamp)];
-    const contents = [...message.editHistory.map(m => m.content), message.content];
+export function HistoryModal({ modalProps, message }: { modalProps: ModalProps; message: MyMLMessage; }) {
+    const editHistory = message.editHistory ?? [];
+    const [currentTab, setCurrentTab] = useState(editHistory.length);
+    const timestamps = [message.firstEditTimestamp ?? message.timestamp, ...editHistory.map(edit => edit.timestamp)];
+    const contents = [...editHistory.map(edit => edit.content), message.content ?? ""];
+    const firstEditTime = new Date(message.firstEditTimestamp ?? message.timestamp).getTime();
+    const originalTime = new Date(message.timestamp).getTime();
 
     return (
         <ModalRoot {...modalProps} size={ModalSize.LARGE}>
@@ -51,7 +55,7 @@ export function HistoryModal({ modalProps, message }: { modalProps: ModalProps; 
                     selectedItem={currentTab}
                     onItemSelect={setCurrentTab}
                 >
-                    {message.firstEditTimestamp.getTime() !== message.timestamp.getTime() && (
+                    {firstEditTime !== originalTime && (
                         <TooltipContainer text="This edit state was not logged so it can't be displayed.">
                             <TabBar.Item
                                 className="vc-settings-tab-bar-item"

@@ -20,6 +20,7 @@ import { Settings } from "@api/Settings";
 import ErrorBoundary from "@components/ErrorBoundary";
 import { getIntlMessage } from "@utils/discord";
 import { classes } from "@utils/misc";
+import type { HTMLAttributes, ReactNode } from "react";
 import { Message } from "@vencord/discord-types";
 import { proxyLazy } from "@utils/lazy";
 import { find, filters } from "@webpack";
@@ -69,11 +70,10 @@ export const renderEdits = ErrorBoundary.wrap(
   { noop: true }
 );
 
-interface EditMarkerProps {
+interface EditMarkerProps extends Omit<HTMLAttributes<HTMLSpanElement>, "children"> {
   message: Message;
   className?: string;
-  children?: React.ReactNode;
-  [key: string]: any;
+  children?: ReactNode;
 }
 
 /**

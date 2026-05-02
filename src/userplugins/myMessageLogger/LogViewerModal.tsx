@@ -53,6 +53,11 @@ const cl = classNameFactory("vc-ml-viewer-");
 
 const PAGE_SIZE = 20;
 
+type MessageAttachmentLike = {
+    filename?: string;
+    url?: string;
+};
+
 export function openLogViewerModal() {
     openModal((props) => (
         <ErrorBoundary>
@@ -464,7 +469,7 @@ function MessageCard({
                     >
                         Attachments: {message.attachments.length}
                     </Text>
-                    {message.attachments.map((att: any, i: number) => (
+                    {message.attachments.map((att: MessageAttachmentLike, i: number) => (
                         <div
                             key={i}
                             style={{
