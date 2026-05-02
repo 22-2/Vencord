@@ -16,7 +16,7 @@
  * along with this program.  If not, see <https://www.gnu.org/licenses/>.
  */
 
-import "./messageLogger.css";
+import "./myMessageLogger.css";
 
 import { ApplicationCommandInputType, sendBotMessage } from "@api/Commands";
 import { Settings } from "@api/Settings";
@@ -43,12 +43,12 @@ import { makeEdit, parseEditContent } from "./utils";
 // Re-export for external use
 export { parseEditContent } from "./utils";
 
-const logger = new Logger("MessageLogger");
+const logger = new Logger("MyMessageLogger");
 
 /**
- * MessageLogger Plugin - 削除・編集されたメッセージを永続化して表示するプラグイン
+ * MyMessageLogger Plugin - 削除・編集されたメッセージを永続化して表示するプラグイン
  *
- * ## アーキテクチャ概要 (MessageLoggerV2に準拠)
+ * ## アーキテクチャ概要 (MyMessageLoggerV2に準拠)
  *
  * このプラグインは Discord 内部の Dispatcher（イベント配信システム）を
  * モンキーパッチすることでメッセージイベントを捕捉します。
@@ -76,7 +76,7 @@ const logger = new Logger("MessageLogger");
  * - LOAD_MESSAGES_AROUND_SUCCESS: ジャンプ/検索時の読み込み
  */
 export default definePlugin({
-    name: "MessageLogger",
+    name: "MyMessageLogger",
     description: "Temporarily logs deleted and edited messages.",
     tags: ["Chat", "Utility"],
     authors: [Devs.rushii, Devs.Ven, Devs.AutumnVN, Devs.Nickyux, Devs.Kyuuhachi],
@@ -191,7 +191,7 @@ export default definePlugin({
                 ignoreGuilds,
                 logEdits,
                 logDeletes
-            } = Settings.plugins.MessageLogger;
+            } = Settings.plugins.MyMessageLogger;
 
             const myId = UserStore.getCurrentUser().id;
             const channel = ChannelStore.getChannel(message.channel_id);

@@ -25,14 +25,14 @@ const monitoringCache = new Map<string, boolean>();
  * Loads monitoring settings from the database into memory
  */
 export async function loadMonitoringSettings(): Promise<void> {
-  const db = await dbPromise;
-  const keys = await db.getAllKeys("settings");
-  for (const key of keys) {
-    const val = await db.get("settings", key);
-    if (val !== undefined) {
-      monitoringCache.set(key, val);
+    const db = await dbPromise;
+    const keys = await db.getAllKeys("settings");
+    for (const key of keys) {
+        const val = await db.get("settings", key);
+        if (val !== undefined) {
+            monitoringCache.set(key, val);
+        }
     }
-  }
 }
 
 /**
@@ -42,20 +42,20 @@ export async function loadMonitoringSettings(): Promise<void> {
  * @param enabled - true/false to enable/disable, null to reset to default
  */
 export async function setMonitoring(
-  type: "guild" | "channel",
-  id: string,
-  enabled: boolean | null
+    type: "guild" | "channel",
+    id: string,
+    enabled: boolean | null,
 ): Promise<void> {
-  const key = `${type}:${id}`;
-  const db = await dbPromise;
+    const key = `${type}:${id}`;
+    const db = await dbPromise;
 
-  if (enabled === null) {
-    await db.delete("settings", key);
-    monitoringCache.delete(key);
-  } else {
-    await db.put("settings", enabled, key);
-    monitoringCache.set(key, enabled);
-  }
+    if (enabled === null) {
+        await db.delete("settings", key);
+        monitoringCache.delete(key);
+    } else {
+        await db.put("settings", enabled, key);
+        monitoringCache.set(key, enabled);
+    }
 }
 
 /**
@@ -64,25 +64,28 @@ export async function setMonitoring(
  * @param channelId - The channel ID
  * @returns true if monitoring is enabled
  */
-export function isMonitored(guildId: string | undefined, channelId: string): boolean {
-  const channelKey = `channel:${channelId}`;
-  if (monitoringCache.has(channelKey)) {
-    return monitoringCache.get(channelKey)!;
-  }
-
-  if (guildId) {
-    const guildKey = `guild:${guildId}`;
-    if (monitoringCache.has(guildKey)) {
-      return monitoringCache.get(guildKey)!;
+export function isMonitored(
+    guildId: string | undefined,
+    channelId: string,
+): boolean {
+    const channelKey = `channel:${channelId}`;
+    if (monitoringCache.has(channelKey)) {
+        return monitoringCache.get(channelKey)!;
     }
-  }
 
-  return false;
+    if (guildId) {
+        const guildKey = `guild:${guildId}`;
+        if (monitoringCache.has(guildKey)) {
+            return monitoringCache.get(guildKey)!;
+        }
+    }
+
+    return false;
 }
 
 /**
  * Gets the raw monitoring cache value for a key
  */
 export function getMonitoringValue(key: string): boolean | undefined {
-  return monitoringCache.get(key);
+    return monitoringCache.get(key);
 }

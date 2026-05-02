@@ -26,11 +26,11 @@ import textStyle from "./deleteStyleText.css?managed";
  * Applies the appropriate delete style based on settings
  */
 export function addDeleteStyle(): void {
-  if (Settings.plugins.MessageLogger.deleteStyle === "text") {
-    enableStyle(textStyle);
-    disableStyle(overlayStyle);
-  } else {
-    disableStyle(textStyle);
-    enableStyle(overlayStyle);
-  }
+    if (Settings.plugins.MessageLogger.deleteStyle === "text") {
+        enableStyle(textStyle);
+        disableStyle(overlayStyle);
+    } else {
+        disableStyle(textStyle);
+        enableStyle(overlayStyle);
+    }
 }

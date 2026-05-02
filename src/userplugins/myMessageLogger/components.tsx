@@ -26,7 +26,7 @@ import { find, filters } from "@webpack";
 import { MessageStore, Timestamp, useStateFromStores } from "@webpack/common";
 
 import { openHistoryModal } from "./HistoryModal";
-import { MLMessage } from "./types";
+import { MyMLMessage } from "./types";
 import { parseEditContent } from "./utils";
 
 const styles = proxyLazy(() => find(filters.byProps("edited", "communicationDisabled", "isSystemMessage"), { isIndirect: true }));
@@ -38,7 +38,7 @@ export const renderEdits = ErrorBoundary.wrap(
   ({ message: { id: messageId, channel_id: channelId } }: { message: Message; }) => {
     const message = useStateFromStores(
       [MessageStore],
-      () => MessageStore.getMessage(channelId, messageId) as MLMessage,
+      () => MessageStore.getMessage(channelId, messageId) as MyMLMessage,
       null,
       (oldMsg, newMsg) => oldMsg?.editHistory === newMsg?.editHistory
     );

@@ -19,41 +19,41 @@
 import { Message } from "@vencord/discord-types";
 import { DBSchema } from "idb";
 
-export interface MLMessage extends Message {
-  deleted?: boolean;
-  editHistory?: { timestamp: Date | any; content: string; }[];
-  firstEditTimestamp?: Date | any;
-  edited_timestamp?: any;
-  delete_data?: { hidden?: boolean; };
+export interface MyMLMessage extends Message {
+    deleted?: boolean;
+    editHistory?: { timestamp: Date | any; content: string }[];
+    firstEditTimestamp?: Date | any;
+    edited_timestamp?: any;
+    delete_data?: { hidden?: boolean };
 }
 
-export interface MessageLoggerDB extends DBSchema {
-  settings: {
-    key: string;
-    value: boolean;
-  };
-  messages: {
-    key: string;
-    value: MLMessage;
-    indexes: { "by-channel": string; };
-  };
+export interface MyMessageLoggerDB extends DBSchema {
+    settings: {
+        key: string;
+        value: boolean;
+    };
+    messages: {
+        key: string;
+        value: MyMLMessage;
+        indexes: { "by-channel": string };
+    };
 }
 
 export interface LoadMessagesAction {
-  channelId: string;
-  messages: any[];
-  hasMoreBefore?: boolean;
-  hasMoreAfter?: boolean;
-  isBefore?: boolean;
-  isAfter?: boolean;
+    channelId: string;
+    messages: any[];
+    hasMoreBefore?: boolean;
+    hasMoreAfter?: boolean;
+    isBefore?: boolean;
+    isAfter?: boolean;
 }
 
 export interface DeleteData {
-  ids?: string[];
-  id?: string;
-  mlDeleted?: boolean;
-  channelId?: string;
-  channel_id?: string;
-  message?: any;
-  payload?: any;
+    ids?: string[];
+    id?: string;
+    mlDeleted?: boolean;
+    channelId?: string;
+    channel_id?: string;
+    message?: any;
+    payload?: any;
 }
