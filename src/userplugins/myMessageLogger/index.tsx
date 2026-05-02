@@ -27,7 +27,6 @@ import { findByPropsLazy } from "@webpack";
 import {
     ChannelStore,
     FluxDispatcher,
-    MessageCache,
     MessageStore,
     SelectedChannelStore,
     UserStore,
@@ -210,63 +209,8 @@ export default definePlugin({
             // cache is hydrated so deleted styling does not disappear until the
             // user manually changes channels.
             this.restoreSelectedChannelMessages();
-
-            // Intent: on cold start, also rebuild the current channel cache from IDB
-            // to ensure deleted flags are visible even if early load events were missed.
-            const currentChannelId = SelectedChannelStore.getChannelId();
-            if (currentChannelId) {
-                void this.restoreChannelCacheFromDB(currentChannelId);
-            }
         } catch (e) {
             logger.error("Failed to hydrate persisted messages", e);
-        }
-    },
-
-    /**
-     * Fallback restore path for startup/channel-switch timing issues.
-     * Rebuild the channel MessageCache from current cache + IDB persisted records.
-     */
-    async restoreChannelCacheFromDB(channelId: string): Promise<void> {
-        try {
-            const persisted = await getMessagesForChannel(channelId);
-            if (!persisted.length) return;
-
-            let cache = MessageCache.getOrCreate(channelId);
-            const currentMessages = cache.toArray();
-            const mergedById = new Map<string, any>();
-
-            for (const message of currentMessages) {
-                mergedById.set(message.id, message);
-            }
-
-            for (const message of persisted) {
-                normalizePersistedMessage(message);
-                mergedById.set(message.id, message);
-                this.upsertPersistedMessage(message);
-            }
-
-            const sortedMessages = Array.from(mergedById.values()).sort((a, b) => {
-                const timeA = typeof a?.timestamp?.valueOf === "function"
-                    ? a.timestamp.valueOf()
-                    : new Date(a?.timestamp ?? 0).valueOf();
-                const timeB = typeof b?.timestamp?.valueOf === "function"
-                    ? b.timestamp.valueOf()
-                    : new Date(b?.timestamp ?? 0).valueOf();
-                return timeA - timeB;
-            });
-
-            for (const message of currentMessages) {
-                cache = cache.remove(message.id);
-            }
-
-            for (const message of sortedMessages) {
-                cache = cache.receiveMessage(message);
-            }
-
-            MessageCache.commit(cache);
-            MessageStore.emitChange();
-        } catch (e) {
-            logger.error("Failed to restore channel cache from DB", e);
         }
     },
 
