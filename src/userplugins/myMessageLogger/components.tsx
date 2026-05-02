@@ -43,7 +43,8 @@ export const renderEdits = ErrorBoundary.wrap(
       (oldMsg, newMsg) => oldMsg?.editHistory === newMsg?.editHistory
     );
 
-    if (!Settings.plugins.MessageLogger.inlineEdits) return null;
+    // This user plugin has its own settings namespace; using the stock key disables inline edits.
+    if (!Settings.plugins.MyMessageLogger.inlineEdits) return null;
     if (!message) return null;
 
     return (

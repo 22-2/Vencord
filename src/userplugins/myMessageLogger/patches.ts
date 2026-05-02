@@ -199,7 +199,8 @@ export const patches = [
             match: /if\((\i)\.blocked\)return \i\.\i\.MESSAGE_GROUP_BLOCKED;/,
             replace: '$&else if($1.deleted) return"MESSAGE_GROUP_DELETED";',
         },
-        predicate: () => Settings.plugins.MessageLogger.collapseDeleted,
+        // The grouping patch should follow this plugin's own collapse setting.
+        predicate: () => Settings.plugins.MyMessageLogger.collapseDeleted,
     },
     {
         // Message group rendering
@@ -216,6 +217,7 @@ export const patches = [
                     '$&$1.type==="MESSAGE_GROUP_DELETED"?$2=$self.DELETED_MESSAGE_COUNT:',
             },
         ],
-        predicate: () => Settings.plugins.MessageLogger.collapseDeleted,
+        // The renderer patch must use the same namespace as the grouping patch.
+        predicate: () => Settings.plugins.MyMessageLogger.collapseDeleted,
     },
 ];

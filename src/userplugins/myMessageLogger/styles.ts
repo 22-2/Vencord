@@ -26,7 +26,8 @@ import textStyle from "./deleteStyleText.css?managed";
  * Applies the appropriate delete style based on settings
  */
 export function addDeleteStyle(): void {
-    if (Settings.plugins.MessageLogger.deleteStyle === "text") {
+    // Keep style toggling bound to this plugin's options, not the stock MessageLogger plugin.
+    if (Settings.plugins.MyMessageLogger.deleteStyle === "text") {
         enableStyle(textStyle);
         disableStyle(overlayStyle);
     } else {
