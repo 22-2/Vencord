@@ -1,7 +1,8 @@
 /* HideSidebarPro Styles */
 
 /* Members List */
-body.vc-hds-hide-members aside[class*="membersWrap"] {
+/* スレッドUIでは membersWrap が aside 以外に付くことがあるため、タグ依存を外して同じ折りたたみ処理を適用する */
+body.vc-hds-hide-members [class*="membersWrap"] {
     transition: width 0.25s ease, min-width 0.25s ease !important;
     overflow: hidden !important;
     position: relative !important;
@@ -13,32 +14,32 @@ body.vc-hds-hide-members aside[class*="membersWrap"] {
 }
 
 /* ホバーしていない状態 */
-body.vc-hds-hide-members aside[class*="membersWrap"]:not(:hover) {
+body.vc-hds-hide-members [class*="membersWrap"]:not(:hover) {
     width: 0 !important;
     min-width: 15px !important;
     background: var(--background-secondary);
 }
 
 /* ホバーした状態 */
-body.vc-hds-hide-members aside[class*="membersWrap"]:hover {
+body.vc-hds-hide-members [class*="membersWrap"]:hover {
     width: 240px !important;
     min-width: 240px !important;
 }
 
 /* 内部コンテンツの幅固定 */
-body.vc-hds-hide-members aside[class*="membersWrap"] > div {
+body.vc-hds-hide-members [class*="membersWrap"] > div {
     width: 240px !important;
     min-width: 240px !important;
 }
 
 /* コンテンツの表示制御 */
-body.vc-hds-hide-members aside[class*="membersWrap"] > * {
+body.vc-hds-hide-members [class*="membersWrap"] > * {
     visibility: hidden;
     opacity: 0;
     transition: visibility 0s 0.25s, opacity 0.25s linear;
 }
 
-body.vc-hds-hide-members aside[class*="membersWrap"]:hover > * {
+body.vc-hds-hide-members [class*="membersWrap"]:hover > * {
     visibility: visible;
     opacity: 1;
     transition: opacity 0.25s linear;
