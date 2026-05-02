@@ -160,13 +160,20 @@ export default definePlugin({
         this.patchDispatcher();
         void this.hydratePersistedMessages();
 
-        // Intent: dispatcher patch can miss some startup/load edge-cases depending
-        // on internal timing. Keep a deterministic fallback by restoring the selected
-        // channel cache whenever channel selection changes.
+        // Intent: some channel switches still miss the patched load path depending
+        // on Discord's internal timing. Use a lightweight replay against the current
+        // store window instead of rebuilding MessageCache, which causes list jumps.
         this._onChannelSelect = (event) => {
-            const channelId = event?.channelId ?? SelectedChannelStore.getChannelId();
-            if (!channelId) return;
-            void this.restoreChannelCacheFromDB(channelId);
+            const selectedChannelId = event?.channelId ?? SelectedChannelStore.getChannelId();
+            if (!selectedChannelId) return;
+
+            const replaySelectedChannel = () => {
+                if (SelectedChannelStore.getChannelId() !== selectedChannelId) return;
+                this.restoreSelectedChannelMessages();
+            };
+
+            queueMicrotask(replaySelectedChannel);
+            requestAnimationFrame(replaySelectedChannel);
         };
         FluxDispatcher.subscribe("CHANNEL_SELECT", this._onChannelSelect);
     },
