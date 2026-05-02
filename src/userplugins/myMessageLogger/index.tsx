@@ -23,7 +23,15 @@ import { Settings } from "@api/Settings";
 import { Devs, SUPPORT_CATEGORY_ID, VENBOT_USER_ID } from "@utils/constants";
 import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
-import { ChannelStore, UserStore } from "@webpack/common";
+import { findByPropsLazy } from "@webpack";
+import {
+    ChannelStore,
+    FluxDispatcher,
+    MessageCache,
+    MessageStore,
+    SelectedChannelStore,
+    UserStore,
+} from "@webpack/common";
 
 import { EditMarker, getDeletedMessageCountFormat, renderEdits } from "./components";
 import {
@@ -32,13 +40,24 @@ import {
     patchGuildContextMenu,
     patchMessageContextMenu,
 } from "./contextMenus";
-import { deleteMessageFromDB, getMessagesForChannel, saveMessage } from "./database";
+import {
+    deleteMessageFromDB,
+    getAllMessages,
+    getMessagesForChannel,
+    saveMessage,
+} from "./database";
 import { openLogViewerModal } from "./LogViewerModal";
 import { isMonitored, loadMonitoringSettings } from "./monitoring";
 import { options } from "./options";
 import { patches } from "./patches";
 import { addDeleteStyle } from "./styles";
-import { makeEdit, parseEditContent } from "./utils";
+import {
+    makeEdit,
+    normalizePersistedMessage,
+    parseEditContent,
+    reAddDeletedMessages,
+} from "./utils";
+import { DeleteData, LoadMessagesAction, MyMLMessage } from "./types";
 
 // Re-export for external use
 export { parseEditContent } from "./utils";
@@ -96,6 +115,13 @@ export default definePlugin({
     options,
     patches,
 
+    // Intent: restore on message loads must be synchronous at dispatch time, so
+    // we hydrate persisted records into memory once and keep that cache updated.
+    _persistedMessagesByChannel: new Map<string, MyMLMessage[]>(),
+    _dispatcher: null as any,
+    _originalDispatch: null as ((...args: any[]) => any) | null,
+    _onChannelSelect: null as ((event: { channelId?: string }) => void) | null,
+
     contextMenus: {
         "message": patchMessageContextMenu,
         "channel-context": (children, props) => {
@@ -128,12 +154,258 @@ export default definePlugin({
     start(): void {
         addDeleteStyle();
         loadMonitoringSettings();
+
+        // Intent: dispatcher restoration must run before MessageStore consumes the
+        // load payload, so we patch dispatch itself instead of rebuilding caches later.
+        this.patchDispatcher();
+        void this.hydratePersistedMessages();
+
+        // Intent: dispatcher patch can miss some startup/load edge-cases depending
+        // on internal timing. Keep a deterministic fallback by restoring the selected
+        // channel cache whenever channel selection changes.
+        this._onChannelSelect = (event) => {
+            const channelId = event?.channelId ?? SelectedChannelStore.getChannelId();
+            if (!channelId) return;
+            void this.restoreChannelCacheFromDB(channelId);
+        };
+        FluxDispatcher.subscribe("CHANNEL_SELECT", this._onChannelSelect);
+    },
+
+    stop(): void {
+        if (this._onChannelSelect) {
+            FluxDispatcher.unsubscribe("CHANNEL_SELECT", this._onChannelSelect);
+            this._onChannelSelect = null;
+        }
+        this.restoreDispatcher();
+    },
+
+    /**
+     * Intent: IndexedDB is async, but dispatch injection must be sync.
+     * Hydrate everything into memory up front so restore paths can stay synchronous.
+     */
+    async hydratePersistedMessages(): Promise<void> {
+        try {
+            const allMessages = await getAllMessages();
+            const next = new Map<string, MyMLMessage[]>();
+
+            for (const message of allMessages) {
+                normalizePersistedMessage(message);
+                const channelMessages = next.get(message.channel_id) ?? [];
+                channelMessages.push(message);
+                next.set(message.channel_id, channelMessages);
+            }
+
+            this._persistedMessagesByChannel = next;
+
+            // Intent: IDB hydration is async, so the first channel load after a
+            // Discord restart can happen before persisted messages are ready.
+            // Re-apply restore logic to the currently selected channel once the
+            // cache is hydrated so deleted styling does not disappear until the
+            // user manually changes channels.
+            this.restoreSelectedChannelMessages();
+
+            // Intent: on cold start, also rebuild the current channel cache from IDB
+            // to ensure deleted flags are visible even if early load events were missed.
+            const currentChannelId = SelectedChannelStore.getChannelId();
+            if (currentChannelId) {
+                void this.restoreChannelCacheFromDB(currentChannelId);
+            }
+        } catch (e) {
+            logger.error("Failed to hydrate persisted messages", e);
+        }
+    },
+
+    /**
+     * Fallback restore path for startup/channel-switch timing issues.
+     * Rebuild the channel MessageCache from current cache + IDB persisted records.
+     */
+    async restoreChannelCacheFromDB(channelId: string): Promise<void> {
+        try {
+            const persisted = await getMessagesForChannel(channelId);
+            if (!persisted.length) return;
+
+            let cache = MessageCache.getOrCreate(channelId);
+            const currentMessages = cache.toArray();
+            const mergedById = new Map<string, any>();
+
+            for (const message of currentMessages) {
+                mergedById.set(message.id, message);
+            }
+
+            for (const message of persisted) {
+                normalizePersistedMessage(message);
+                mergedById.set(message.id, message);
+                this.upsertPersistedMessage(message);
+            }
+
+            const sortedMessages = Array.from(mergedById.values()).sort((a, b) => {
+                const timeA = typeof a?.timestamp?.valueOf === "function"
+                    ? a.timestamp.valueOf()
+                    : new Date(a?.timestamp ?? 0).valueOf();
+                const timeB = typeof b?.timestamp?.valueOf === "function"
+                    ? b.timestamp.valueOf()
+                    : new Date(b?.timestamp ?? 0).valueOf();
+                return timeA - timeB;
+            });
+
+            for (const message of currentMessages) {
+                cache = cache.remove(message.id);
+            }
+
+            for (const message of sortedMessages) {
+                cache = cache.receiveMessage(message);
+            }
+
+            MessageCache.commit(cache);
+            MessageStore.emitChange();
+        } catch (e) {
+            logger.error("Failed to restore channel cache from DB", e);
+        }
+    },
+
+    restoreSelectedChannelMessages(): void {
+        try {
+            const channelId = SelectedChannelStore.getChannelId();
+            if (!channelId) return;
+
+            const messages = MessageStore.getMessages(channelId)?._array;
+            if (!messages?.length) return;
+
+            const beforeLength = messages.length;
+            this.injectPersistedMessages({
+                channelId,
+                messages,
+                // Treat the current store contents as a bounded window so we only
+                // reinsert persisted messages that belong inside the visible slice.
+                hasMoreBefore: true,
+                hasMoreAfter: true,
+                isBefore: false,
+                isAfter: false,
+            });
+
+            if (messages.length !== beforeLength) {
+                MessageStore.emitChange();
+            }
+        } catch (e) {
+            logger.error("Failed to restore selected channel messages", e);
+        }
+    },
+
+    /**
+     * Intent: keep the in-memory restore cache aligned with writes performed by
+     * live delete handling so restored messages are available without another reload.
+     */
+    upsertPersistedMessage(message: MyMLMessage): void {
+        if (!message?.channel_id) return;
+
+        normalizePersistedMessage(message);
+
+        const channelMessages = this._persistedMessagesByChannel.get(message.channel_id) ?? [];
+        const existingIndex = channelMessages.findIndex(existing => existing.id === message.id);
+
+        if (existingIndex === -1) {
+            channelMessages.push(message);
+        } else {
+            channelMessages[existingIndex] = message;
+        }
+
+        this._persistedMessagesByChannel.set(message.channel_id, channelMessages);
+    },
+
+    removePersistedMessage(messageId: string, channelId?: string): void {
+        if (!messageId) return;
+
+        if (channelId) {
+            const channelMessages = this._persistedMessagesByChannel.get(channelId);
+            if (!channelMessages) return;
+
+            this._persistedMessagesByChannel.set(
+                channelId,
+                channelMessages.filter(message => message.id !== messageId),
+            );
+            return;
+        }
+
+        for (const [persistedChannelId, channelMessages] of this._persistedMessagesByChannel) {
+            const nextMessages = channelMessages.filter(message => message.id !== messageId);
+            if (nextMessages.length !== channelMessages.length) {
+                this._persistedMessagesByChannel.set(persistedChannelId, nextMessages);
+                return;
+            }
+        }
+    },
+
+    /**
+     * Intent: MLV2's stable behavior comes from mutating the exact load window
+     * Discord is about to commit, instead of rebuilding MessageCache afterwards.
+     */
+    injectPersistedMessages(action: LoadMessagesAction): void {
+        const channelId = action.channelId;
+        const { messages } = action;
+        if (!channelId || !messages?.length) return;
+
+        const savedMessages = this._persistedMessagesByChannel.get(channelId) ?? [];
+        if (!savedMessages.length) return;
+
+        reAddDeletedMessages(
+            messages,
+            savedMessages,
+            !action.hasMoreAfter && !action.isBefore,
+            !action.hasMoreBefore && !action.isAfter,
+        );
+    },
+
+    /**
+     * Intent: injection must happen before the original dispatch so MessageStore
+     * consumes the augmented payload and keeps the virtual list anchor stable.
+     */
+    patchDispatcher(): void {
+        if (this._originalDispatch) return;
+
+        try {
+            const dispatcherOwner = findByPropsLazy("_dispatcher") as any;
+            const dispatcher = dispatcherOwner?._dispatcher ?? findByPropsLazy("dispatch", "subscribe");
+
+            if (!dispatcher?.dispatch) return;
+
+            this._dispatcher = dispatcher;
+            this._originalDispatch = dispatcher.dispatch.bind(dispatcher);
+            dispatcher.dispatch = (...args: any[]) => this.onDispatchEvent(args, this._originalDispatch!);
+        } catch (e) {
+            logger.error("Failed to patch dispatcher", e);
+        }
+    },
+
+    restoreDispatcher(): void {
+        if (!this._dispatcher || !this._originalDispatch) return;
+
+        this._dispatcher.dispatch = this._originalDispatch;
+        this._dispatcher = null;
+        this._originalDispatch = null;
+    },
+
+    onDispatchEvent(args: any[], callDefault: (...dispatchArgs: any[]) => any) {
+        const dispatch = args[0];
+        if (!dispatch) return callDefault(...args);
+
+        try {
+            if (
+                dispatch.type === "LOAD_MESSAGES_SUCCESS"
+                || dispatch.type === "LOAD_MESSAGES_AROUND_SUCCESS"
+            ) {
+                this.injectPersistedMessages(dispatch);
+            }
+        } catch (e) {
+            logger.error("Failed to inject persisted messages", e);
+        }
+
+        return callDefault(...args);
     },
 
     /**
      * Handles message deletion in the cache
      */
-    handleDelete(cache: any, data: { ids?: string[]; id?: string; mlDeleted?: boolean; }, isBulk: boolean): any {
+    handleDelete(cache: any, data: DeleteData, isBulk: boolean): any {
         try {
             if (cache == null || (!isBulk && !cache.has(data.id))) return cache;
 
@@ -149,12 +421,17 @@ export default definePlugin({
                 if (shouldIgnore) {
                     cache = cache.remove(id);
                     deleteMessageFromDB(id);
+                    // Intent: manual removal or ignored messages should disappear from
+                    // the restore cache immediately so later jumps do not resurrect them.
+                    this.removePersistedMessage(id, msg.channel_id);
                 } else {
                     cache = cache.update(id, (m: any) => {
                         const updated = m
                             .set("deleted", true)
                             .set("attachments", m.attachments.map((a: any) => (a.deleted = true, a)));
-                        saveMessage(updated.toJS());
+                        const persistedMessage = updated.toJS();
+                        saveMessage(persistedMessage);
+                        this.upsertPersistedMessage(persistedMessage);
                         return updated;
                     });
                 }
