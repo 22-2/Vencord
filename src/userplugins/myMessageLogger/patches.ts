@@ -19,7 +19,7 @@
 import { Settings } from "@api/Settings";
 
 /**
- * All Webpack patches for the MessageLogger plugin
+ * All Webpack patches for the MyMessageLogger plugin
  */
 export const patches = [
     {

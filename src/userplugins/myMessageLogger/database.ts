@@ -21,10 +21,11 @@ import { openDB } from "idb";
 
 import { MyMessageLoggerDB, MyMLMessage } from "./types";
 
-const logger = new Logger("MessageLogger");
+const logger = new Logger("MyMessageLogger");
 
 /**
- * Database promise for IndexedDB operations
+ * Database promise for IndexedDB operations.
+ * Keep the historical DB name so existing users do not lose their stored logs.
  */
 export const dbPromise = openDB<MyMessageLoggerDB>("MessageLoggerDB", 2, {
     upgrade(db, oldVersion) {

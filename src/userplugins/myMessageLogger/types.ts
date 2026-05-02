@@ -19,11 +19,16 @@
 import { Message } from "@vencord/discord-types";
 import { DBSchema } from "idb";
 
+export interface MyMLEditHistoryEntry {
+    timestamp: Date | string | number;
+    content: string;
+}
+
 export interface MyMLMessage extends Message {
     deleted?: boolean;
-    editHistory?: { timestamp: Date | any; content: string }[];
-    firstEditTimestamp?: Date | any;
-    edited_timestamp?: any;
+    editHistory?: MyMLEditHistoryEntry[];
+    firstEditTimestamp?: Date | string | number;
+    edited_timestamp?: Date | string | number | null;
     delete_data?: { hidden?: boolean };
 }
 
@@ -41,11 +46,12 @@ export interface MyMessageLoggerDB extends DBSchema {
 
 export interface LoadMessagesAction {
     channelId: string;
-    messages: any[];
+    messages: MyMLMessage[];
     hasMoreBefore?: boolean;
     hasMoreAfter?: boolean;
     isBefore?: boolean;
     isAfter?: boolean;
+    type?: string;
 }
 
 export interface DeleteData {
@@ -54,6 +60,6 @@ export interface DeleteData {
     mlDeleted?: boolean;
     channelId?: string;
     channel_id?: string;
-    message?: any;
-    payload?: any;
+    message?: Partial<MyMLMessage>;
+    payload?: unknown;
 }

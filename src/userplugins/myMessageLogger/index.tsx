@@ -23,6 +23,7 @@ import { Settings } from "@api/Settings";
 import { Devs, SUPPORT_CATEGORY_ID, VENBOT_USER_ID } from "@utils/constants";
 import { Logger } from "@utils/Logger";
 import definePlugin from "@utils/types";
+import { Message } from "@vencord/discord-types";
 import { findByPropsLazy } from "@webpack";
 import {
     ChannelStore,
@@ -62,6 +63,43 @@ import { DeleteData, LoadMessagesAction, MyMLMessage } from "./types";
 export { parseEditContent } from "./utils";
 
 const logger = new Logger("MyMessageLogger");
+
+type ChannelSelectEvent = { channelId?: string };
+type DispatchFunction = (...args: readonly unknown[]) => unknown;
+type DispatchEvent = LoadMessagesAction | { type?: string };
+type IgnorableMessage = Pick<Partial<Message>, "author" | "channel_id" | "flags">;
+
+interface DispatcherLike {
+    dispatch: DispatchFunction;
+}
+
+interface DispatcherOwner {
+    _dispatcher?: DispatcherLike;
+}
+
+interface CachedAttachment {
+    deleted?: boolean;
+}
+
+interface CachedMessageRecord {
+    channel_id: string;
+    flags: number;
+    attachments: CachedAttachment[];
+    set(key: "deleted", value: boolean): CachedMessageRecord;
+    set(key: "attachments", value: CachedAttachment[]): CachedMessageRecord;
+    toJS(): MyMLMessage;
+}
+
+interface MessageCacheLike {
+    has(id: string | undefined): boolean;
+    get(id: string): CachedMessageRecord | undefined;
+    remove(id: string): MessageCacheLike;
+    update(id: string, updater: (message: CachedMessageRecord) => CachedMessageRecord): MessageCacheLike;
+}
+
+function isLoadMessagesAction(dispatch: DispatchEvent): dispatch is LoadMessagesAction {
+    return typeof (dispatch as LoadMessagesAction).channelId === "string" && Array.isArray((dispatch as LoadMessagesAction).messages);
+}
 
 /**
  * MyMessageLogger Plugin - 削除・編集されたメッセージを永続化して表示するプラグイン
@@ -114,12 +152,12 @@ export default definePlugin({
     options,
     patches,
 
-    // Intent: restore on message loads must be synchronous at dispatch time, so
-    // we hydrate persisted records into memory once and keep that cache updated.
+    // 復元は dispatch の同期タイミングで差し込む必要があるため、永続化済みメッセージを
+    // 先にメモリへ載せておき、以後はそのキャッシュだけを更新して追従する。
     _persistedMessagesByChannel: new Map<string, MyMLMessage[]>(),
-    _dispatcher: null as any,
-    _originalDispatch: null as ((...args: any[]) => any) | null,
-    _onChannelSelect: null as ((event: { channelId?: string }) => void) | null,
+    _dispatcher: null as DispatcherLike | null,
+    _originalDispatch: null as DispatchFunction | null,
+    _onChannelSelect: null as ((event: ChannelSelectEvent) => void) | null,
 
     contextMenus: {
         "message": patchMessageContextMenu,
@@ -154,14 +192,13 @@ export default definePlugin({
         addDeleteStyle();
         loadMonitoringSettings();
 
-        // Intent: dispatcher restoration must run before MessageStore consumes the
-        // load payload, so we patch dispatch itself instead of rebuilding caches later.
+        // Discord がロード payload を MessageStore へ流し込む前に差し込みたいので、
+        // 後追いで store を触るのではなく dispatch 自体を先にフックする。
         this.patchDispatcher();
         void this.hydratePersistedMessages();
 
-        // Intent: some channel switches still miss the patched load path depending
-        // on Discord's internal timing. Use a lightweight replay against the current
-        // store window instead of rebuilding MessageCache, which causes list jumps.
+        // 一部のチャンネル切替では Discord 内部タイミング次第で load patch を踏まないため、
+        // 現在見えている配列へ軽く再差し込みする保険を残す。重い再構築は表示ジャンプを起こすので避ける。
         this._onChannelSelect = (event) => {
             const selectedChannelId = event?.channelId ?? SelectedChannelStore.getChannelId();
             if (!selectedChannelId) return;
@@ -186,8 +223,8 @@ export default definePlugin({
     },
 
     /**
-     * Intent: IndexedDB is async, but dispatch injection must be sync.
-     * Hydrate everything into memory up front so restore paths can stay synchronous.
+     * IndexedDB は非同期だが、復元差し込みは同期で走らせたい。
+     * そのため起動時に全件をメモリへ積み、以後の復元経路を同期化する。
      */
     async hydratePersistedMessages(): Promise<void> {
         try {
@@ -203,17 +240,19 @@ export default definePlugin({
 
             this._persistedMessagesByChannel = next;
 
-            // Intent: IDB hydration is async, so the first channel load after a
-            // Discord restart can happen before persisted messages are ready.
-            // Re-apply restore logic to the currently selected channel once the
-            // cache is hydrated so deleted styling does not disappear until the
-            // user manually changes channels.
+            // 起動直後は IDB 読み込み完了より先に最初のチャンネル描画が走ることがある。
+            // 読み込み完了後に現在チャンネルへ一度だけ軽く再差し込みして、
+            // 削除済み表示が次のチャンネル移動まで消えたままになるのを防ぐ。
             this.restoreSelectedChannelMessages();
         } catch (e) {
             logger.error("Failed to hydrate persisted messages", e);
         }
     },
 
+    /**
+     * 現在表示中のメッセージ配列に対して、永続化済みメッセージだけを差し込む軽量復元経路。
+     * store 全体を組み直さないので、スクロール位置や仮想リストのアンカーを壊しにくい。
+     */
     restoreSelectedChannelMessages(): void {
         try {
             const channelId = SelectedChannelStore.getChannelId();
@@ -226,8 +265,7 @@ export default definePlugin({
             this.injectPersistedMessages({
                 channelId,
                 messages,
-                // Treat the current store contents as a bounded window so we only
-                // reinsert persisted messages that belong inside the visible slice.
+                // いま見えている範囲だけを対象にして、同じ window に属する履歴だけ差し戻す。
                 hasMoreBefore: true,
                 hasMoreAfter: true,
                 isBefore: false,
@@ -243,8 +281,8 @@ export default definePlugin({
     },
 
     /**
-     * Intent: keep the in-memory restore cache aligned with writes performed by
-     * live delete handling so restored messages are available without another reload.
+     * ライブ削除で保存内容が変わったら、IDB だけでなくメモリ側の復元キャッシュも即更新する。
+     * これをしないと、次の読み込みまで古い内容を差し戻してしまう。
      */
     upsertPersistedMessage(message: MyMLMessage): void {
         if (!message?.channel_id) return;
@@ -287,8 +325,8 @@ export default definePlugin({
     },
 
     /**
-     * Intent: MLV2's stable behavior comes from mutating the exact load window
-     * Discord is about to commit, instead of rebuilding MessageCache afterwards.
+     * MLV2 と同様に、Discord がこれから commit する配列そのものへ差し込む。
+     * 後段で store 全体を書き換えるより、並び順とスクロール位置が安定する。
      */
     injectPersistedMessages(action: LoadMessagesAction): void {
         const channelId = action.channelId;
@@ -307,21 +345,21 @@ export default definePlugin({
     },
 
     /**
-     * Intent: injection must happen before the original dispatch so MessageStore
-     * consumes the augmented payload and keeps the virtual list anchor stable.
+     * 差し込みは元の dispatch より前でないと MessageStore が削除済みメッセージを見失う。
+     * ここを後ろにすると、復元はできても表示位置が不安定になりやすい。
      */
     patchDispatcher(): void {
         if (this._originalDispatch) return;
 
         try {
-            const dispatcherOwner = findByPropsLazy("_dispatcher") as any;
+            const dispatcherOwner = findByPropsLazy("_dispatcher") as DispatcherOwner | undefined;
             const dispatcher = dispatcherOwner?._dispatcher ?? findByPropsLazy("dispatch", "subscribe");
 
             if (!dispatcher?.dispatch) return;
 
             this._dispatcher = dispatcher;
             this._originalDispatch = dispatcher.dispatch.bind(dispatcher);
-            dispatcher.dispatch = (...args: any[]) => this.onDispatchEvent(args, this._originalDispatch!);
+            dispatcher.dispatch = (...args) => this.onDispatchEvent(args, this._originalDispatch!);
         } catch (e) {
             logger.error("Failed to patch dispatcher", e);
         }
@@ -335,8 +373,8 @@ export default definePlugin({
         this._originalDispatch = null;
     },
 
-    onDispatchEvent(args: any[], callDefault: (...dispatchArgs: any[]) => any) {
-        const dispatch = args[0];
+    onDispatchEvent(args: readonly unknown[], callDefault: DispatchFunction) {
+        const dispatch = args[0] as DispatchEvent | undefined;
         if (!dispatch) return callDefault(...args);
 
         try {
@@ -344,6 +382,7 @@ export default definePlugin({
                 dispatch.type === "LOAD_MESSAGES_SUCCESS"
                 || dispatch.type === "LOAD_MESSAGES_AROUND_SUCCESS"
             ) {
+                if (!isLoadMessagesAction(dispatch)) return callDefault(...args);
                 this.injectPersistedMessages(dispatch);
             }
         } catch (e) {
@@ -354,14 +393,18 @@ export default definePlugin({
     },
 
     /**
-     * Handles message deletion in the cache
+     * 削除イベントを MessageStore のキャッシュへ反映する。
+     * ここで DB 保存とメモリキャッシュ更新も同時に済ませ、復元経路の状態を一箇所に揃える。
      */
-    handleDelete(cache: any, data: DeleteData, isBulk: boolean): any {
+    handleDelete(cache: MessageCacheLike | null | undefined, data: DeleteData, isBulk: boolean): MessageCacheLike | null | undefined {
         try {
             if (cache == null || (!isBulk && !cache.has(data.id))) return cache;
 
             const mutate = (id: string) => {
-                const msg = cache.get(id);
+                const currentCache = cache;
+                if (!currentCache) return;
+
+                const msg = currentCache.get(id);
                 if (!msg) return;
 
                 const EPHEMERAL = 64;
@@ -370,16 +413,16 @@ export default definePlugin({
                     this.shouldIgnore(msg);
 
                 if (shouldIgnore) {
-                    cache = cache.remove(id);
+                    cache = currentCache.remove(id);
                     deleteMessageFromDB(id);
-                    // Intent: manual removal or ignored messages should disappear from
-                    // the restore cache immediately so later jumps do not resurrect them.
+                    // 手動削除や ignore 対象は復元キャッシュからも即座に消し、
+                    // 後続の jump / channel load で復活しないようにする。
                     this.removePersistedMessage(id, msg.channel_id);
                 } else {
-                    cache = cache.update(id, (m: any) => {
+                    cache = currentCache.update(id, (m) => {
                         const updated = m
                             .set("deleted", true)
-                            .set("attachments", m.attachments.map((a: any) => (a.deleted = true, a)));
+                            .set("attachments", m.attachments.map((attachment) => (attachment.deleted = true, attachment)));
                         const persistedMessage = updated.toJS();
                         saveMessage(persistedMessage);
                         this.upsertPersistedMessage(persistedMessage);
@@ -409,7 +452,7 @@ export default definePlugin({
      * - モニタリング対象かどうか
      * - 編集/削除のログ設定
      */
-    shouldIgnore(message: any, isEdit = false): boolean {
+    shouldIgnore(message: IgnorableMessage, isEdit = false): boolean {
         try {
             const {
                 ignoreBots,
@@ -421,11 +464,14 @@ export default definePlugin({
                 logDeletes
             } = Settings.plugins.MyMessageLogger;
 
+            const channelId = message.channel_id;
+            if (!channelId) return false;
+
             const myId = UserStore.getCurrentUser().id;
-            const channel = ChannelStore.getChannel(message.channel_id);
+            const channel = ChannelStore.getChannel(channelId);
 
             // Check if channel is monitored
-            if (!isMonitored(channel?.guild_id, message.channel_id)) {
+            if (!isMonitored(channel?.guild_id, channelId)) {
                 return true;
             }
 
@@ -433,10 +479,10 @@ export default definePlugin({
                 (ignoreBots && message.author?.bot) ||
                 (ignoreSelf && message.author?.id === myId) ||
                 ignoreUsers.includes(message.author?.id) ||
-                ignoreChannels.includes(message.channel_id) ||
-                ignoreChannels.includes(channel?.parent_id) ||
+                ignoreChannels.includes(channelId) ||
+                ignoreChannels.includes(channel?.parent_id ?? "") ||
                 (isEdit ? !logEdits : !logDeletes) ||
-                ignoreGuilds.includes(channel?.guild_id) ||
+                ignoreGuilds.includes(channel?.guild_id ?? "") ||
                 // Ignore Venbot in the support channels
                 (message.author?.id === VENBOT_USER_ID && channel?.parent_id === SUPPORT_CATEGORY_ID)
             );
