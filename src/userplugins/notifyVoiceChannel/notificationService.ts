@@ -17,8 +17,13 @@
  */
 
 import { SettingsManager } from "./settingsManager";
-import { ensureCspPermission, Logger, normalizeAudioPath } from "./utils";
+import { ensureCspPermission, Logger } from "./utils";
 import { PUSHOVER_API_URL } from "./constants";
+import { tiks } from '@rexa-developer/tiks'
+
+tiks.init({
+    theme: "crisp",
+});
 
 export class NotificationService {
     private static pendingMessages: string[] = [];
@@ -77,16 +82,9 @@ export class NotificationService {
     }
 
     private static async playAudio(): Promise<void> {
-        const { playAudio, audioPath } = SettingsManager.getConfig();
-        if (!playAudio || !audioPath) return;
-
-        const normalizedPath = normalizeAudioPath(audioPath);
-
-        if (await ensureCspPermission(normalizedPath, "media-src")) {
-            new Audio(normalizedPath)
-                .play()
-                .catch((e) => Logger.error("Failed to play audio:", e));
-        }
+        const { playAudio } = SettingsManager.getConfig();
+        if (!playAudio) return;
+        tiks.notify();
     }
 
     private static async sendPushover(

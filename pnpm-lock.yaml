@@ -16,6 +16,9 @@ importers:
       '@intrnl/xxhash64':
         specifier: ^0.1.2
         version: 0.1.2
+      '@rexa-developer/tiks':
+        specifier: ^0.2.0
+        version: 0.2.0
       '@vap/core':
         specifier: 0.0.12
         version: 0.0.12
@@ -819,6 +822,17 @@ packages:
     resolution: {integrity: sha512-46BZJYJjc/WwmKjsvDFykHtXrtomsCIrwYQPOP7VfMJoZY2bsDF9oROBABR3paDjDcmkUye1Pb1BqdcdiipaWA==}
     engines: {node: '>=18'}
     hasBin: true
+
+  '@rexa-developer/tiks@0.2.0':
+    resolution: {integrity: sha512-fpm4EJqtOpidyHpt0Uvhh1SdEZL+YbK6jaPp8eh+UH+WgKzCMWbj5A4qJDutgD6g4PU2tKpSwEWfiw82MeQPYg==}
+    peerDependencies:
+      react: '>=18.0.0'
+      vue: '>=3.0.0'
+    peerDependenciesMeta:
+      react:
+        optional: true
+      vue:
+        optional: true
 
   '@rtsao/scc@1.1.0':
     resolution: {integrity: sha512-zt6OdqaDoOnJ1ZYsCYGt9YmWzDXl4vQdKTyJev62gFhRGKdx7mcT54V9KIjg+d2wi9EXsPvAPKe7i7WjfVWB8g==}
@@ -3465,6 +3479,8 @@ snapshots:
       - bare-buffer
       - react-native-b4a
       - supports-color
+
+  '@rexa-developer/tiks@0.2.0': {}
 
   '@rtsao/scc@1.1.0': {}
 

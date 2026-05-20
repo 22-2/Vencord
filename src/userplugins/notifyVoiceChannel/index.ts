@@ -81,12 +81,6 @@ export default definePlugin({
             description: "通知時に音声を再生する",
             default: false,
         },
-        audioPath: {
-            type: OptionType.STRING,
-            description:
-                "再生する音声のURLまたはパス (https://... または file:///...)",
-            default: "",
-        },
         ignoredUserIds: {
             type: OptionType.STRING,
             description: "通知を除外するユーザーID (カンマ区切り)",

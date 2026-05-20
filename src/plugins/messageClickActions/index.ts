@@ -94,7 +94,7 @@ export default definePlugin({
             } else {
                 if (!settings.store.enableDoubleClickToReply) return;
 
-                if (!MessageTypeSets.REPLYABLE.has(msg.type) || msg.hasFlag(MessageFlags.EPHEMERAL)) return;
+                if (!MessageTypeSets.REPLYABLE.has(msg.type) || msg.hasFlag?.(MessageFlags.EPHEMERAL)) return;
 
                 const isShiftPress = event.shiftKey && !settings.store.requireModifier;
                 const shouldMention = isPluginEnabled(NoReplyMentionPlugin.name)
