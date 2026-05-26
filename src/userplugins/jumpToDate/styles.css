@@ -1,0 +1,18 @@
+.vc-jtd-date-picker {
+    background-color: var(--input-background-default);
+    color: var(--text-default);
+    width: 95%;
+    padding: 8px 8px 8px 12px;
+    margin-bottom: 1em;
+    outline: none;
+    border: 1px solid var(--input-background-default);
+    border-radius: 4px;
+    font-weight: 500;
+    font-style: inherit;
+    font-size: 100%;
+}
+
+.vc-jtd-hint {
+    margin-top: 4px;
+    margin-bottom: 1em;
+}
